@@ -14,9 +14,36 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata: Metadata = {
-  title: "Nucleus - Student & Parent Portal",
-  description: "Science educational platform for students and parents",
+export const metadata = {
+  title: "Nucleus Platform | منصة الإدارة والتعليم الذكي",
+  description: "منصة متكاملة لإدارة المنظومة التعليمية، تربط بين المعلم، الطالب، وولي الأمر في بيئة تفاعلية ذكية وسريعة.",
+  keywords: ["Nucleus", "Nucleus Platform", "منصة تعليمية", "إدارة المدارس", "نظام تعليمي"],
+  
+  // الإعدادات دي مسؤولة عن شكل الرابط على فيسبوك وواتساب ولينكدإن
+  openGraph: {
+    title: "Nucleus Platform | منصة الإدارة والتعليم الذكي",
+    description: "منصة متكاملة لإدارة المنظومة التعليمية، تربط بين المعلم، الطالب، وولي الأمر.",
+    url: "https://nucleus-platform-delta.vercel.app",
+    siteName: "Nucleus Platform",
+    images: [
+      {
+        url: "/teacher-mobile.png", // ده مسار الصورة اللي حطيناها في فولدر public
+        width: 1200,
+        height: 630,
+        alt: "Nucleus Platform Preview",
+      },
+    ],
+    locale: "ar_EG",
+    type: "website",
+  },
+
+  // الإعدادات دي مسؤولة عن شكل الرابط لو اتبعت على تويتر (X)
+  twitter: {
+    card: "summary_large_image",
+    title: "Nucleus Platform | منصة الإدارة والتعليم الذكي",
+    description: "منصة متكاملة لإدارة المنظومة التعليمية، تربط بين المعلم، الطالب، وولي الأمر.",
+    images: ["/teacher-mobile.png"],
+  },
 };
 
 export default function RootLayout({
