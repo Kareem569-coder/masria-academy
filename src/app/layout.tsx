@@ -45,6 +45,12 @@ export const metadata = {
     images: ["/teacher-mobile.png"],
   },
 };
+export const viewport = {
+  themeColor: '#000000', // تقدر تغير الكود الأسود ده للون الأساسي بتاع المنصة بتاعتك
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1, // بيمنع الزوم الغلط على الموبايل عشان يفضل شكل التطبيق مظبوط
+};
 
 export default function RootLayout({
   children,
