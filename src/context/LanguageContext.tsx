@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 
 type Language = 'en' | 'ar';
 
@@ -104,8 +104,8 @@ interface Translations {
 
 const translations: Record<Language, Translations> = {
   en: {
-    appName: 'Nucleus',
-    tagline: 'Science Educational Platform',
+    appName: 'MASRIA',
+    tagline: 'Software Engineering Academy',
     login: 'Login',
     signup: 'Sign Up',
     name: 'Name',
@@ -201,8 +201,8 @@ const translations: Record<Language, Translations> = {
     pinned: 'Pinned',
   },
   ar: {
-    appName: 'نواة',
-    tagline: 'منصة تعليمية للعلوم',
+    appName: 'MASRIA',
+    tagline: 'أكاديمية هندسة البرمجيات',
     login: 'تسجيل الدخول',
     signup: 'إنشاء حساب',
     name: 'الاسم',
@@ -317,14 +317,13 @@ export const useLanguage = () => {
 };
 
 export const LanguageProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // Keep the server render and first client render identical. The persisted
+  // preference is restored after hydration.
   const [language, setLanguage] = useState<Language>('en');
 
   useEffect(() => {
-    // Load language from localStorage
-    const savedLanguage = localStorage.getItem('language') as Language;
-    if (savedLanguage && (savedLanguage === 'en' || savedLanguage === 'ar')) {
-      setLanguage(savedLanguage);
-    }
+    const savedLanguage = localStorage.getItem('language');
+    if (savedLanguage === 'ar') setLanguage('ar');
   }, []);
 
   const handleSetLanguage = (lang: Language) => {

@@ -4,68 +4,18 @@ import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
 import { useRouter } from 'next/navigation';
 import { useState, useEffect, useMemo } from 'react';
-import { doc, getDoc, collection, getDocs, addDoc, query, where } from 'firebase/firestore';
+import { arrayRemove, arrayUnion, doc, getDoc, collection, getDocs, addDoc, query, updateDoc, where } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { getYouTubeEmbedUrl } from '@/lib/utils';
-
-interface StudentData {
-  name: string;
-  email: string;
-  linkCode: string;
-  gradeLevel?: string;
-}
+import DashboardNavbar from '@/components/DashboardNavbar';
+import GlassCard from '@/components/GlassCard';
+import ActivityRenderer from '@/components/lesson/ActivityRenderer';
+import { getOrderedActivities, isActivityCompletionRequired, isLessonCompleteForActivities } from '@/lib/lessonHelpers';
+import type { Activity, Announcement, ExamResult, GradeEntry, Lesson, PerformanceRecord, UserProfile } from '@/types/models';
 
 type TabType = 'dashboard' | 'lessons' | 'quiz' | 'grades' | 'announcements';
 
-interface QuizOption {
-  en: string;
-  ar: string;
-}
-
-interface QuizQuestion {
-  en: string;
-  ar: string;
-  options: QuizOption[];
-  correct: number;
-}
-
-interface LessonQuiz {
-  quizTitle_en: string;
-  quizTitle_ar: string;
-  questions: QuizQuestion[];
-}
-
-interface Lesson {
-  id: string;
-  title_en: string;
-  title_ar: string;
-  type: 'video' | 'pdf' | 'quiz_only' | 'hybrid';
-  duration: string;
-  gradeLevel: string;
-  order?: number;
-  videoUrl?: string;
-  pdfUrl?: string;
-  quiz?: LessonQuiz;
-}
-
-interface GradeEntry {
-  id: string;
-  subject: string;
-  quiz: string;
-  score: number;
-  date: string;
-  source: 'legacy' | 'quiz';
-}
-
-interface Announcement {
-  id: string;
-  title: string;
-  content: string;
-  gradeLevel: string;
-  author: string;
-  pinned: boolean;
-  createdAt: string;
-}
+type StudentData = UserProfile;
 
 const initialGrades: GradeEntry[] = [];
 
@@ -75,25 +25,25 @@ function buildFallbackLessons(gradeLevel: string): Lesson[] {
   return [
     {
       id: 'fallback-1',
-      title_en: 'Introduction to Physics',
-      title_ar: 'مقدمة في الفيزياء',
+      title_en: 'Algorithms Fundamentals',
+      title_ar: 'أساسيات الخوارزميات',
       type: 'video',
       duration: '45 min',
       gradeLevel,
       order: 1,
       videoUrl: undefined,
       quiz: {
-        quizTitle_en: 'Physics Check',
-        quizTitle_ar: 'اختبار الفيزياء',
+        quizTitle_en: 'Algorithm Warmup',
+        quizTitle_ar: 'تقييم الخوارزميات',
         questions: [
           {
-            en: 'What force pulls objects toward Earth?',
-            ar: 'ما هي القوة التي تجذب الأجسام نحو الأرض؟',
+            en: 'Which data structure uses FIFO ordering?',
+            ar: 'أي هيكل بيانات يستخدم ترتيب FIFO؟',
             options: [
-              { en: 'Magnetism', ar: 'المغناطيسية' },
-              { en: 'Gravity', ar: 'الجاذبية' },
-              { en: 'Friction', ar: 'الاحتكاك' },
-              { en: 'Tension', ar: 'الشد' },
+              { en: 'Stack', ar: 'المكدس' },
+              { en: 'Queue', ar: 'الطابور' },
+              { en: 'Tree', ar: 'الشجرة' },
+              { en: 'Graph', ar: 'الرسم البياني' },
             ],
             correct: 1,
           },
@@ -102,25 +52,25 @@ function buildFallbackLessons(gradeLevel: string): Lesson[] {
     },
     {
       id: 'fallback-2',
-      title_en: 'Chemistry Basics',
-      title_ar: 'أساسيات الكيمياء',
+      title_en: 'Data Structures Essentials',
+      title_ar: 'أساسيات هياكل البيانات',
       type: 'pdf',
       duration: '30 min',
       gradeLevel,
       order: 2,
       pdfUrl: '#',
       quiz: {
-        quizTitle_en: 'Chemistry Check',
-        quizTitle_ar: 'اختبار الكيمياء',
+        quizTitle_en: 'Data Structures Check',
+        quizTitle_ar: 'اختبار هياكل البيانات',
         questions: [
           {
-            en: 'What is the chemical symbol for water?',
-            ar: 'ما هو الرمز الكيميائي للماء؟',
+            en: 'Which structure supports fast lookups by key?',
+            ar: 'أي بنية تدعم البحث السريع حسب المفتاح؟',
             options: [
-              { en: 'H2O', ar: 'H2O' },
-              { en: 'CO2', ar: 'CO2' },
-              { en: 'O2', ar: 'O2' },
-              { en: 'NaCl', ar: 'NaCl' },
+              { en: 'Hash Map', ar: 'خريطة تجزئة' },
+              { en: 'Linked List', ar: 'قائمة متصلة' },
+              { en: 'Array', ar: 'مصفوفة' },
+              { en: 'Queue', ar: 'طابور' },
             ],
             correct: 0,
           },
@@ -129,34 +79,34 @@ function buildFallbackLessons(gradeLevel: string): Lesson[] {
     },
     {
       id: 'fallback-3',
-      title_en: 'Quick Cell Review',
-      title_ar: 'مراجعة سريعة للخلية',
+      title_en: 'Coding Logic Patterns',
+      title_ar: 'أنماط منطق البرمجة',
       type: 'quiz_only',
       duration: '10 min',
       gradeLevel,
       order: 3,
       quiz: {
-        quizTitle_en: 'Biology Check',
-        quizTitle_ar: 'اختبار الأحياء',
+        quizTitle_en: 'Logic Assessment',
+        quizTitle_ar: 'تقييم المنطق',
         questions: [
           {
-            en: 'What is the basic unit of life?',
-            ar: 'ما هي الوحدة الأساسية للحياة؟',
+            en: 'What is the primary purpose of a function?',
+            ar: 'ما الهدف الرئيسي للدالة؟',
             options: [
-              { en: 'Atom', ar: 'الذرة' },
-              { en: 'Molecule', ar: 'الجزيء' },
-              { en: 'Cell', ar: 'الخلية' },
-              { en: 'Tissue', ar: 'النسيج' },
+              { en: 'Store data permanently', ar: 'تخزين البيانات بشكل دائم' },
+              { en: 'Reuse a block of logic', ar: 'إعادة استخدام كتلة من المنطق' },
+              { en: 'Design the UI', ar: 'تصميم الواجهة' },
+              { en: 'Handle networking only', ar: 'معالجة الشبكات فقط' },
             ],
-            correct: 2,
+            correct: 1,
           },
         ],
       },
     },
     {
       id: 'fallback-4',
-      title_en: 'Earth Science',
-      title_ar: 'علوم الأرض',
+      title_en: 'Object-Oriented Design',
+      title_ar: 'تصميم كائني التوجه',
       type: 'pdf',
       duration: '25 min',
       gradeLevel,
@@ -165,8 +115,8 @@ function buildFallbackLessons(gradeLevel: string): Lesson[] {
     },
     {
       id: 'fallback-5',
-      title_en: 'Astronomy 101',
-      title_ar: 'علم الفلك 101',
+      title_en: 'Frontend Engineering Basics',
+      title_ar: 'أساسيات هندسة الواجهة',
       type: 'video',
       duration: '50 min',
       gradeLevel,
@@ -175,8 +125,8 @@ function buildFallbackLessons(gradeLevel: string): Lesson[] {
     },
     {
       id: 'fallback-6',
-      title_en: 'Environmental Science',
-      title_ar: 'العلوم البيئية',
+      title_en: 'System Design Overview',
+      title_ar: 'نظرة عامة على تصميم الأنظمة',
       type: 'pdf',
       duration: '35 min',
       gradeLevel,
@@ -188,7 +138,7 @@ function buildFallbackLessons(gradeLevel: string): Lesson[] {
 
 export default function StudentDashboard() {
   const { user, logout, loading } = useAuth();
-  const { language, setLanguage, dir } = useLanguage();
+  const { language, dir } = useLanguage();
   const router = useRouter();
   
   // 🌟 State الوضع الليلي والصباحي
@@ -209,11 +159,13 @@ export default function StudentDashboard() {
   const [quizSubmitted, setQuizSubmitted] = useState(false);
   const [quizResult, setQuizResult] = useState<{ score: number; total: number; passed: boolean } | null>(null);
   const [savingResult, setSavingResult] = useState(false);
+  const [lessonActivityCompletion, setLessonActivityCompletion] = useState<Record<string, Set<string>>>({});
+  const [activeActivityByLesson, setActiveActivityByLesson] = useState<Record<string, string | null>>({});
 
   const [gradesLog, setGradesLog] = useState<GradeEntry[]>(initialGrades);
 
   // ===== Exam Results (Offline Exams) =====
-  const [examResults, setExamResults] = useState<any[]>([]);
+  const [examResults, setExamResults] = useState<ExamResult[]>([]);
   const [loadingExamResults, setLoadingExamResults] = useState(true);
 
   // ===== Announcements =====
@@ -226,7 +178,9 @@ export default function StudentDashboard() {
         try {
           const userDoc = await getDoc(doc(db, 'users', user.uid));
           if (userDoc.exists()) {
-            setStudentData(userDoc.data() as StudentData);
+            const data = userDoc.data() as StudentData;
+            setStudentData(data);
+            setCompletedLessons(new Set(data.completedLessons || []));
           }
         } catch (error) {
           console.error('Error fetching student data:', error);
@@ -247,10 +201,21 @@ export default function StudentDashboard() {
       try {
         const q = query(collection(db, 'exam_results'), where('studentId', '==', user.uid));
         const snapshot = await getDocs(q);
-        const fetched = snapshot.docs.map((d) => ({
-          id: d.id,
-          ...d.data(),
-        }));
+        const fetched: ExamResult[] = snapshot.docs.map((d) => {
+          const data = d.data() as Partial<ExamResult>;
+          return {
+            id: d.id,
+            examId: data.examId,
+            examTitle: data.examTitle || '',
+            studentId: data.studentId || user.uid,
+            studentName: data.studentName,
+            gradeLevel: data.gradeLevel,
+            score: Number(data.score) || 0,
+            totalMarks: Number(data.totalMarks) || 1,
+            feedback: data.feedback || '',
+            updatedAt: data.updatedAt || new Date().toISOString(),
+          };
+        });
         setExamResults(fetched);
       } catch (error) {
         console.error('Error fetching exam results:', error);
@@ -276,7 +241,7 @@ export default function StudentDashboard() {
             title: data.title || '',
             content: data.content || '',
             gradeLevel: data.gradeLevel || '',
-            author: data.author || 'Teacher Mariam 👑',
+            author: data.author || 'MASRIA Instructor',
             pinned: data.pinned || false,
             createdAt: data.createdAt || new Date().toISOString(),
           };
@@ -307,17 +272,21 @@ export default function StudentDashboard() {
       setLoadingLessons(true);
       const gradeLevel = studentData?.gradeLevel || '';
       try {
-        const snapshot = await getDocs(collection(db, 'lessons'));
+        const lessonsQuery = gradeLevel
+          ? query(
+              collection(db, 'lessons'),
+              where('gradeLevel', '==', gradeLevel),
+              where('isPublished', '==', true)
+            )
+          : query(collection(db, 'lessons'), where('isPublished', '==', true));
+        const snapshot = await getDocs(lessonsQuery);
         const fetched: Lesson[] = snapshot.docs.map((d) => ({
           id: d.id,
           ...(d.data() as Omit<Lesson, 'id'>),
         }));
-        const matching = gradeLevel
-          ? fetched.filter((lesson) => lesson.gradeLevel === gradeLevel)
-          : fetched;
 
-        if (matching.length > 0) {
-          setLessons(matching);
+        if (fetched.length > 0) {
+          setLessons(fetched);
         } else {
           setLessons(buildFallbackLessons(gradeLevel || 'Grade 4'));
         }
@@ -344,12 +313,12 @@ export default function StudentDashboard() {
         const snapshot = await getDocs(q);
         if (!snapshot.empty) {
           const entries: GradeEntry[] = snapshot.docs.map((d) => {
-            const data = d.data() as any;
+            const data = d.data() as Partial<PerformanceRecord>;
             return {
               id: d.id,
               subject: data.subject || (isAr ? 'اختبار مادة علمية' : 'Science Quiz'),
               quiz: data.quizTitle || (isAr ? 'اختبار الدرس' : 'Lesson Quiz'),
-              score: Math.round((data.score / (data.total || 1)) * 100),
+              score: Math.round((Number(data.score) || 0) / (Number(data.total) || 1) * 100),
               date: (data.date || new Date().toISOString()).slice(0, 10),
               source: 'quiz',
             };
@@ -389,17 +358,32 @@ export default function StudentDashboard() {
     return !completedLessons.has(prevLesson.id);
   };
 
+  const syncLessonCompletion = async (lessonId: string, completed: boolean) => {
+    if (!user) return;
+
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        completedLessons: completed ? arrayUnion(lessonId) : arrayRemove(lessonId),
+      });
+    } catch (error) {
+      console.error('Error saving lesson progress:', error);
+    }
+  };
+
   const toggleLessonCompletion = (lesson: Lesson) => {
     if (lesson.quiz) return;
+    const completed = !completedLessons.has(lesson.id);
+
     setCompletedLessons((prev) => {
       const next = new Set(prev);
-      if (next.has(lesson.id)) {
+      if (!completed) {
         next.delete(lesson.id);
       } else {
         next.add(lesson.id);
       }
       return next;
     });
+    void syncLessonCompletion(lesson.id, completed);
   };
 
   const progress = lessons.length > 0 ? Math.round((completedLessons.size / lessons.length) * 100) : 0;
@@ -411,6 +395,60 @@ export default function StudentDashboard() {
       .map(({ lesson }) => lesson);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sortedLessons, completedLessons]);
+
+  const markActivityCompleted = (lesson: Lesson, activityId: string) => {
+    setLessonActivityCompletion((prev) => {
+      const nextSet = new Set(prev[lesson.id] ?? []);
+      nextSet.add(activityId);
+      return {
+        ...prev,
+        [lesson.id]: nextSet,
+      };
+    });
+
+    const nextCompletionSet = new Set(lessonActivityCompletion[lesson.id] ?? []);
+    nextCompletionSet.add(activityId);
+
+    if (isLessonCompleteForActivities(lesson.activities ?? [], nextCompletionSet)) {
+      setCompletedLessons((prev) => {
+        const next = new Set(prev);
+        next.add(lesson.id);
+        return next;
+      });
+      void syncLessonCompletion(lesson.id, true);
+    }
+  };
+
+  const moveToActivity = (lesson: Lesson, activityId: string) => {
+    setActiveActivityByLesson((prev) => ({
+      ...prev,
+      [lesson.id]: activityId,
+    }));
+  };
+
+  const handleActivityContinue = (lesson: Lesson, activity: Activity) => {
+    const ordered = getOrderedActivities(lesson.activities ?? []);
+    const currentIndex = ordered.findIndex((item) => item.id === activity.id);
+
+    if (isActivityCompletionRequired(activity)) {
+      markActivityCompleted(lesson, activity.id);
+    }
+
+    const nextIndex = currentIndex + 1;
+    if (nextIndex < ordered.length) {
+      moveToActivity(lesson, ordered[nextIndex].id);
+      return;
+    }
+
+    if (lesson.activities && lesson.activities.length > 0) {
+      setCompletedLessons((prev) => {
+        const next = new Set(prev);
+        next.add(lesson.id);
+        return next;
+      });
+      void syncLessonCompletion(lesson.id, true);
+    }
+  };
 
   const activeLesson = useMemo(
     () => lessons.find((l) => l.id === activeQuizLessonId) || null,
@@ -456,6 +494,7 @@ export default function StudentDashboard() {
 
     if (passed) {
       setCompletedLessons((prev) => new Set(prev).add(activeLesson.id));
+      void syncLessonCompletion(activeLesson.id, true);
     }
 
     const nowIso = new Date().toISOString();
@@ -516,163 +555,100 @@ export default function StudentDashboard() {
   const isAr = language === 'ar';
   const isDark = theme === 'dark';
 
-  const OrbitMark = ({ size = 40 }: { size?: number }) => (
-    <svg width={size} height={size} viewBox="0 0 56 56" fill="none">
-      <g className="orbit-ring">
-        <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#C9A876" strokeWidth="1.6" transform="rotate(0 28 28)" fill="none" />
-        <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#8C3B3F" strokeWidth="1.6" transform="rotate(60 28 28)" fill="none" />
-        <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#5C1A24" strokeWidth="1.6" transform="rotate(120 28 28)" fill="none" />
-      </g>
-      <circle cx="28" cy="28" r="6.5" fill="url(#navNucleusGlow)" />
-      <defs>
-        <radialGradient id="navNucleusGlow" cx="0.35" cy="0.3" r="0.9">
-          <stop offset="0%" stopColor="#E7827E" />
-          <stop offset="100%" stopColor="#5C1A24" />
-        </radialGradient>
-      </defs>
-    </svg>
-  );
-
   if (loading || loadingData) {
     return (
-      <div className={`min-h-screen flex items-center justify-center ${isDark ? 'bg-[#1A0609]' : 'bg-[#F8F1E7]'}`}>
+      <div className="flex min-h-screen items-center justify-center bg-[#080c14] text-slate-100">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-14 h-14 rounded-full border-4 border-[#C9A876]/25 border-t-[#8C3B3F] animate-spin" />
-          <div className={`${isDark ? 'text-[#F3E4D6]' : 'text-[#5C1A24]'} text-lg font-medium font-body`}>
+          <div className="h-14 w-14 animate-spin rounded-full border-4 border-cyan-400/20 border-t-cyan-400" />
+          <div className="text-lg font-medium text-slate-100">
             {isAr ? 'جاري التحميل...' : 'Loading...'}
           </div>
         </div>
-        <FontStyles />
       </div>
     );
   }
 
   // 🌟 شاشة "حسابك قيد المراجعة" للطالب فقط
-  if (status === 'pending') {
+  if (studentData?.status === 'pending') {
     return (
-      <div dir={dir} className={`min-h-screen flex items-center justify-center p-6 ${isDark ? 'bg-[#1A0609]' : 'bg-[#F8F1E7]'} font-body transition-colors duration-500`}>
-        <FontStyles />
-        <div className={`max-w-md w-full ${isDark ? 'bg-[#2A0D12]/80 border-[#C9A876]/30 text-[#F3E4D6]' : 'bg-white/80 border-[#C9A876]/30 text-[#2E1013]'} backdrop-blur-xl border rounded-3xl p-8 text-center shadow-xl shadow-[#5C1A24]/5 relative overflow-hidden`}>
-          <div className="absolute inset-0 bg-gradient-to-br from-[#E7C3B6]/10 via-transparent to-[#C9A876]/10 pointer-events-none" />
-          <div className="w-20 h-20 mx-auto mb-5 bg-[#5C1A24]/10 border border-[#C9A876]/40 rounded-full flex items-center justify-center text-4xl shadow-inner">
-            🔒
+      <div dir={dir} className="flex min-h-screen items-center justify-center bg-[#080c14] p-6 text-slate-100">
+        <div className="relative w-full max-w-md overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/60 p-8 text-center shadow-[0_24px_80px_rgba(2,6,23,0.5)] backdrop-blur-xl">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(6,182,212,0.15),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(99,102,241,0.12),transparent_35%)]" />
+          <div className="relative z-10">
+            <div className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/10 text-4xl shadow-[0_0_24px_rgba(6,182,212,0.35)]">
+              🔒
+            </div>
+            <h2 className="mb-2 text-2xl font-bold text-white">
+              {isAr ? 'الحساب قيد المراجعة' : 'Account Under Review'}
+            </h2>
+            <p className="mb-4 text-sm font-semibold text-cyan-200">
+              {isAr ? 'تم إنشاء حسابك بنجاح وهو بانتظار التفعيل' : 'Your account is currently awaiting activation'}
+            </p>
+            <p className="mb-6 text-sm leading-relaxed text-slate-300">
+              {isAr
+                ? 'أهلاً بك في MASRIA! يرجى الانتظار حتى تتم مراجعة حسابك وتفعيله لتتمكن من الوصول إلى المسارات والمحاضرات البرمجية.'
+                : 'Welcome to MASRIA! Please wait while your account is reviewed and activated so you can access the coding tracks and learning modules.'}
+            </p>
+            <button
+              onClick={handleLogout}
+              className="w-full rounded-2xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-4 py-3.5 font-semibold text-white shadow-lg shadow-cyan-500/15 transition hover:brightness-110"
+            >
+              {isAr ? 'تسجيل الخروج' : 'Log Out'}
+            </button>
           </div>
-          <h2 className="text-2xl font-bold bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] bg-clip-text text-transparent mb-2 font-display">
-            {isAr ? 'الحساب قيد المراجعة' : 'Account Under Review'}
-          </h2>
-          <p className="text-sm font-semibold text-[#8C3B3F] mb-4">
-            {isAr ? 'تم إنشاء حسابك بنجاح وهو بانتظار التفعيل' : 'Your account is currently awaiting activation'}
-          </p>
-          <p className={`text-sm ${isDark ? 'text-[#F3E4D6]/70' : 'text-gray-600'} mb-6 leading-relaxed`}>
-            {isAr
-              ? 'أهلاً بك في Nucleus! يرجى الانتظار حتى تقوم إدارة مدرسة مريم محمد بمراجعة حسابك وتفعيله لتتمكن من الوصول للدروس والاختبارات.'
-              : 'Welcome to Nucleus! Please wait until Mariam Mohamed Science School administration reviews and activates your account to access lessons and quizzes.'}
-          </p>
-          <button
-            onClick={handleLogout}
-            className="w-full py-3.5 bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] text-white rounded-2xl font-semibold shadow-md hover:brightness-110 transition-all"
-          >
-            {isAr ? 'تسجيل الخروج' : 'Log Out'}
-          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div dir={dir} className={`min-h-screen relative overflow-x-hidden font-body transition-colors duration-500 ${isDark ? 'bg-[#1A0609] text-[#F3E4D6]' : 'bg-[#F8F1E7] text-[#2E1013]'}`}>
-      <FontStyles />
-
-      {/* Ambient warm field */}
-      <div className="fixed inset-0 overflow-hidden pointer-events-none">
-        <div className={`absolute top-[-12%] start-[-8%] w-[28rem] h-[28rem] rounded-full blur-[120px] ${isDark ? 'bg-[#C9A876]/10' : 'bg-[#C9A876]/15'}`} />
-        <div className={`absolute bottom-[-12%] end-[5%] w-[26rem] h-[26rem] rounded-full blur-[120px] ${isDark ? 'bg-[#8C3B3F]/15' : 'bg-[#8C3B3F]/10'}`} />
-        <div className={`absolute top-[30%] end-[20%] w-[20rem] h-[20rem] rounded-full blur-[120px] ${isDark ? 'bg-[#5C1A24]/20' : 'bg-[#E7C3B6]/25'}`} />
+    <div dir={dir} className="relative min-h-screen overflow-x-hidden bg-[#080c14] text-slate-100">
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -left-24 top-0 h-96 w-96 rounded-full bg-cyan-500/15 blur-3xl" />
+        <div className="absolute -right-16 top-1/3 h-[28rem] w-[28rem] rounded-full bg-indigo-500/15 blur-3xl" />
+        <div className="absolute bottom-0 left-1/3 h-72 w-72 rounded-full bg-violet-500/10 blur-3xl" />
       </div>
 
-      {/* Nav */}
-      <nav className={`relative z-10 backdrop-blur-xl border-b transition-colors duration-500 ${isDark ? 'bg-[#1A0609]/70 border-[#C9A876]/20' : 'bg-white/70 border-[#C9A876]/25'}`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-20 gap-4">
-            <div className="flex items-center gap-3">
-              <OrbitMark />
-              <div>
-                <h1
-                  className="font-display text-xl sm:text-2xl font-bold bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] bg-clip-text text-transparent leading-tight"
-                  dir="ltr"
-                >
-                  Nucleus
-                </h1>
-                <span className="text-[11px] text-[#8C3B3F]/70 tracking-wide block leading-tight">
-                  {isAr ? 'منصة مريم محمد لعلوم الحياة' : 'Maryam Mohamed Science School'}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 sm:gap-3">
-              <span className={`hidden md:inline text-sm ${isDark ? 'text-[#F3E4D6]/70' : 'text-[#5C1A24]/70'}`}>
-                {isAr ? 'أهلاً،' : 'Welcome,'} <span className={`${isDark ? 'text-[#C9A876]' : 'text-[#5C1A24]'} font-semibold`}>{studentData?.name || (isAr ? 'الطالب' : 'Student')}</span>
-              </span>
-
-              {/* 🌟 زرار التبديل صباحي ومسائي */}
-              <button
-                onClick={() => setTheme(isDark ? 'light' : 'dark')}
-                className={`p-2 sm:px-3 sm:py-2 rounded-full border text-xs sm:text-sm font-medium transition-all duration-300 flex items-center gap-1.5 ${isDark ? 'bg-[#2A0D12] border-[#C9A876]/30 text-[#C9A876] hover:bg-[#C9A876]/20' : 'bg-[#5C1A24]/5 border-[#C9A876]/30 text-[#5C1A24] hover:bg-[#C9A876]/15'}`}
-                title="Toggle Theme"
-              >
-                {isDark ? '☀️' : '🌙'}
-                <span className="hidden sm:inline">{isDark ? (isAr ? 'صباحي' : 'Light') : (isAr ? 'ليلي' : 'Dark')}</span>
-              </button>
-
-              <button
-                onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')}
-                className={`px-3 py-2 border rounded-full text-xs sm:text-sm font-medium transition-all duration-300 ${isDark ? 'bg-[#2A0D12] border-[#C9A876]/30 text-[#F3E4D6] hover:bg-[#C9A876]/20' : 'bg-[#5C1A24]/5 border-[#C9A876]/30 text-[#5C1A24] hover:bg-[#C9A876]/15'}`}
-              >
-                {language === 'en' ? 'العربية' : 'English'}
-              </button>
-              <button
-                onClick={handleLogout}
-                className="px-4 py-2 bg-[#8C3B3F]/10 text-[#8C3B3F] border border-[#8C3B3F]/30 rounded-full font-medium hover:bg-[#8C3B3F]/20 hover:border-[#8C3B3F]/50 transition-all duration-300 text-sm"
-              >
-                {isAr ? 'تسجيل الخروج' : 'Logout'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </nav>
+      <DashboardNavbar
+        theme={theme}
+        onThemeToggle={() => setTheme(isDark ? 'light' : 'dark')}
+        onLogout={handleLogout}
+        greeting={<><span>{isAr ? 'أهلاً،' : 'Welcome,'} </span><span className="font-semibold text-cyan-300">{studentData?.name || (isAr ? 'المتدرب' : 'Student')}</span></>}
+        showThemeLabel
+      />
 
       <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         {/* Hero / Profile Card */}
-        <div className={`backdrop-blur-xl rounded-[2rem] p-8 border shadow-xl transition-colors duration-500 mb-8 relative overflow-hidden ${isDark ? 'bg-[#2A0D12]/60 border-[#C9A876]/30 shadow-black/20' : 'bg-white/80 border-[#C9A876]/25 shadow-[#5C1A24]/5'}`}>
-          <div className="absolute inset-0 bg-gradient-to-br from-[#E7C3B6]/15 via-transparent to-[#C9A876]/10 pointer-events-none" />
-          <div className="relative flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+        <GlassCard className="relative mb-8 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/60 p-8 shadow-[0_24px_80px_rgba(2,6,23,0.5)] backdrop-blur-xl">
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(6,182,212,0.15),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(99,102,241,0.12),transparent_35%)]" />
+          <div className="relative flex flex-col items-start justify-between gap-6 lg:flex-row lg:items-center">
             <div>
-              <div className="flex flex-wrap items-center gap-3 mb-2">
-                <h2 className={`font-display text-3xl font-bold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
-                  {studentData?.name || (isAr ? 'الطالب' : 'Student')}
+              <div className="mb-2 flex flex-wrap items-center gap-3">
+                <h2 className="text-3xl font-bold text-white">
+                  {studentData?.name || (isAr ? 'المتدرب' : 'Student')}
                 </h2>
                 {studentData?.gradeLevel && (
-                  <span className={`px-3 py-1 rounded-full text-xs font-semibold bg-gradient-to-r from-[#5C1A24]/10 to-[#C9A876]/20 border border-[#C9A876]/40 ${isDark ? 'text-[#C9A876]' : 'text-[#5C1A24]'} shadow-[0_0_16px_rgba(201,168,118,0.15)]`}>
+                  <span className="rounded-full border border-cyan-400/35 bg-cyan-500/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200">
                     {studentData.gradeLevel}
                   </span>
                 )}
               </div>
-              <p className={`${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/60'} text-base mb-5`}>{studentData?.email || 'student@example.com'}</p>
+              <p className="mb-5 text-base text-slate-300">{studentData?.email || 'student@example.com'}</p>
 
-              {/* Access Key widget */}
               <div className="flex flex-wrap items-center gap-3">
                 <div className="flex flex-col">
-                  <span className="text-[10px] uppercase tracking-widest text-[#8C3B3F]/80 mb-1 font-semibold">
-                    {isAr ? 'مفتاح الدخول' : 'Student Access Key'}
+                  <span className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
+                    {isAr ? 'مفتاح الدخول' : 'Access Key'}
                   </span>
-                  <div className={`px-4 py-2.5 rounded-xl border border-[#C9A876]/40 shadow-[0_0_20px_rgba(201,168,118,0.1)] ${isDark ? 'bg-black/40' : 'bg-[#5C1A24]/5'}`}>
-                    <span className="text-lg font-mono font-bold text-[#8C3B3F] tracking-[0.2em]">
+                  <div className="rounded-xl border border-white/10 bg-slate-950/80 px-4 py-2.5 shadow-[0_0_20px_rgba(6,182,212,0.12)]">
+                    <span className="text-lg font-mono font-bold tracking-[0.2em] text-cyan-300">
                       {studentData?.linkCode || '········'}
                     </span>
                   </div>
                 </div>
                 <button
                   onClick={handleCopyCode}
-                  className={`px-4 py-2.5 border border-[#C9A876]/40 rounded-xl transition-all duration-300 flex items-center gap-2 mt-5 ${isDark ? 'bg-[#C9A876]/15 text-[#C9A876] hover:bg-[#C9A876]/25' : 'bg-gradient-to-r from-[#5C1A24]/10 to-[#C9A876]/20 text-[#5C1A24] hover:from-[#5C1A24]/15 hover:to-[#C9A876]/30'}`}
+                  className="mt-5 flex items-center gap-2 rounded-xl border border-cyan-400/25 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-500/15"
                 >
                   {copied ? (
                     <>
@@ -693,25 +669,25 @@ export default function StudentDashboard() {
               </div>
             </div>
           </div>
-        </div>
+        </GlassCard>
 
         {/* Tabs */}
-        <div className={`backdrop-blur-xl rounded-[2rem] border transition-colors duration-500 mb-8 overflow-hidden shadow-xl ${isDark ? 'bg-[#2A0D12]/60 border-[#C9A876]/30 shadow-black/20' : 'bg-white/80 border-[#C9A876]/25 shadow-[#5C1A24]/5'}`}>
-          <div className="flex flex-col sm:flex-row gap-2 p-2">
+        <div className="mb-8 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/60 shadow-[0_24px_80px_rgba(2,6,23,0.5)] backdrop-blur-xl">
+          <div className="flex flex-col gap-2 p-2 sm:flex-row">
             {([
-              { key: 'dashboard', en: 'Dashboard Overview', ar: 'نظرة عامة' },
-              { key: 'lessons', en: 'Science Lessons & Videos', ar: 'الدروس والفيديوهات' },
-              { key: 'quiz', en: 'Interactive Quizzes', ar: 'الاختبارات التفاعلية' },
-              { key: 'grades', en: 'My Grades', ar: 'درجاتي' },
-              { key: 'announcements', en: 'Announcements', ar: 'الإعلانات' },
+              { key: 'dashboard', en: 'Overview', ar: 'نظرة عامة' },
+              { key: 'lessons', en: 'Learning Paths', ar: 'المسارات التعليمية' },
+              { key: 'quiz', en: 'Coding Assessments', ar: 'تقييمات البرمجة' },
+              { key: 'grades', en: 'Scoreboard', ar: 'لوحة الدرجات' },
+              { key: 'announcements', en: 'Release Notes', ar: 'ملاحظات الإصدار' },
             ] as const).map((tab) => (
               <button
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key as TabType)}
-                className={`flex-1 px-5 py-3.5 rounded-2xl font-semibold text-sm transition-all duration-300 ${
+                className={`flex-1 rounded-2xl px-5 py-3.5 text-sm font-semibold transition-all duration-300 ${
                   activeTab === tab.key
-                    ? 'bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] text-white shadow-lg shadow-[#5C1A24]/25'
-                    : `${isDark ? 'text-[#F3E4D6]/60 hover:text-[#F3E4D6] hover:bg-white/5' : 'text-[#5C1A24]/60 hover:text-[#5C1A24] hover:bg-[#C9A876]/[0.08]'}`
+                    ? 'bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-lg shadow-cyan-500/15'
+                    : 'text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
                 {isAr ? tab.ar : tab.en}
@@ -723,64 +699,63 @@ export default function StudentDashboard() {
             {/* DASHBOARD TAB */}
             {activeTab === 'dashboard' && (
               <div>
-                <h3 className={`font-display text-2xl font-bold mb-6 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                <h3 className="mb-6 text-2xl font-bold text-white">
                   {isAr ? 'نظرة عامة على لوحة التحكم' : 'Dashboard Overview'}
                 </h3>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
-                  <div className={`bg-gradient-to-br from-[#5C1A24]/[0.1] to-transparent border rounded-2xl p-6 ${isDark ? 'border-[#C9A876]/20' : 'border-[#5C1A24]/15'}`}>
-                    <h4 className={`text-lg font-semibold mb-1 ${isDark ? 'text-[#C9A876]' : 'text-[#5C1A24]'}`}>
-                      {isAr ? 'دوراتي' : 'My Courses'}
+                <div className="mb-8 grid grid-cols-1 gap-5 md:grid-cols-3">
+                  <div className="rounded-2xl border border-white/10 bg-slate-900/60 p-6 shadow-[0_0_22px_rgba(6,182,212,0.08)]">
+                    <h4 className="mb-1 text-lg font-semibold text-cyan-300">
+                      {isAr ? 'مساري' : 'My Tracks'}
                     </h4>
-                    <p className={`text-sm mb-4 ${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/50'}`}>
-                      {isAr ? 'الوصول لدوراتك العلمية' : 'Access your enrolled science courses'}
+                    <p className="mb-4 text-sm text-slate-300">
+                      {isAr ? 'الوصول إلى محتواك التعليمي' : 'Access your learning modules'}
                     </p>
-                    <div className={`text-3xl font-bold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>{loadingLessons ? '···' : lessons.length}</div>
-                    <div className={`text-xs mt-1 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>{isAr ? 'دروس متاحة' : 'Available Lessons'}</div>
+                    <div className="text-3xl font-bold text-white">{loadingLessons ? '···' : lessons.length}</div>
+                    <div className="mt-1 text-xs text-slate-400">{isAr ? 'وحدات متاحة' : 'Available modules'}</div>
                   </div>
 
-                  <div className={`bg-gradient-to-br from-[#C9A876]/15 to-transparent border rounded-2xl p-6 ${isDark ? 'border-[#C9A876]/30' : 'border-[#C9A876]/30'}`}>
-                    <h4 className="text-lg font-semibold text-[#8C3B3F] mb-1">
+                  <div className="rounded-2xl border border-cyan-400/20 bg-cyan-500/5 p-6 shadow-[0_0_22px_rgba(34,211,238,0.08)]">
+                    <h4 className="mb-1 text-lg font-semibold text-cyan-300">
                       {isAr ? 'التقدم' : 'Progress'}
                     </h4>
-                    <p className={`text-sm mb-4 ${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/50'}`}>
+                    <p className="mb-4 text-sm text-slate-300">
                       {isAr ? 'تتبع تقدمك في التعلم' : 'Track your learning progress'}
                     </p>
-                    <div className={`text-3xl font-bold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>{progress}%</div>
-                    <div className={`text-xs mt-1 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
-                      {isAr ? 'الإنجاز الكلي' : 'Overall Completion'}
+                    <div className="text-3xl font-bold text-white">{progress}%</div>
+                    <div className="mt-1 text-xs text-slate-400">
+                      {isAr ? 'الإكمال الكلي' : 'Overall completion'}
                     </div>
                   </div>
 
-                  <div className={`bg-gradient-to-br from-[#E7C3B6]/20 to-transparent border rounded-2xl p-6 ${isDark ? 'border-[#C9A876]/30' : 'border-[#E7C3B6]/50'}`}>
-                    <h4 className="text-lg font-semibold text-[#8C3B3F] mb-1">
-                      {isAr ? 'الاختبارات' : 'Quizzes Taken'}
+                  <div className="rounded-2xl border border-violet-400/20 bg-violet-500/5 p-6 shadow-[0_0_22px_rgba(139,92,246,0.08)]">
+                    <h4 className="mb-1 text-lg font-semibold text-violet-300">
+                      {isAr ? 'التقييمات' : 'Assessments'}
                     </h4>
-                    <p className={`text-sm mb-4 ${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/50'}`}>
-                      {isAr ? 'شارك في اختبار علمي' : 'Play the live science quiz'}
+                    <p className="mb-4 text-sm text-slate-300">
+                      {isAr ? 'شارك في تقييمات البرمجة' : 'Practice coding assessment challenges'}
                     </p>
-                    <div className={`text-3xl font-bold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                    <div className="text-3xl font-bold text-white">
                       {gradesLog.filter((g) => g.source === 'quiz').length}
                     </div>
-                    <div className={`text-xs mt-1 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>{isAr ? 'مرات لعبت' : 'Attempts'}</div>
+                    <div className="mt-1 text-xs text-slate-400">{isAr ? 'محاولات' : 'Attempts'}</div>
                   </div>
                 </div>
 
-                {/* Animated progress bar */}
                 <div>
-                  <div className="flex justify-between items-center mb-2">
-                    <span className={`text-sm font-semibold ${isDark ? 'text-[#F3E4D6]/80' : 'text-[#5C1A24]/70'}`}>
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-sm font-semibold text-slate-200">
                       {isAr ? 'تقدم الدروس' : 'Lessons Progress'}
                     </span>
-                    <span className="text-sm font-bold text-[#8C3B3F]">{progress}%</span>
+                    <span className="text-sm font-bold text-cyan-300">{progress}%</span>
                   </div>
-                  <div className={`w-full h-3 rounded-full border overflow-hidden ${isDark ? 'bg-black/40 border-[#C9A876]/30' : 'bg-[#5C1A24]/[0.06] border-[#C9A876]/25'}`}>
+                  <div className="h-3 w-full overflow-hidden rounded-full border border-white/10 bg-slate-950/80">
                     <div
-                      className="h-full rounded-full bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] transition-all duration-700 ease-out shadow-[0_0_16px_rgba(201,168,118,0.5)]"
+                      className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-violet-500 shadow-[0_0_18px_rgba(6,182,212,0.45)] transition-all duration-700 ease-out"
                       style={{ width: `${progress}%` }}
                     />
                   </div>
-                  <p className={`text-xs mt-2 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/40'}`}>
+                  <p className="mt-2 text-xs text-slate-400">
                     {completedLessons.size} / {lessons.length} {isAr ? 'دروس مكتملة' : 'lessons completed'}
                   </p>
                 </div>
@@ -790,16 +765,16 @@ export default function StudentDashboard() {
             {/* LESSONS TAB */}
             {activeTab === 'lessons' && (
               <div>
-                <h3 className={`font-display text-2xl font-bold mb-1 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
-                  {isAr ? 'الدروس العلمية' : 'Science Lessons'}
+                <h3 className="mb-1 text-2xl font-bold text-white">
+                  {isAr ? 'المسارات التعليمية' : 'Learning Paths'}
                 </h3>
-                <p className={`text-xs mb-6 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/40'}`}>
-                  {isAr ? 'أكمل الدروس بالترتيب لفتح ما يليها' : 'Complete lessons in order to unlock the next one'}
+                <p className="mb-6 text-xs text-slate-400">
+                  {isAr ? 'أكمل الوحدات بالترتيب لفتح ما يليها' : 'Complete modules in order to unlock the next one'}
                 </p>
                 {loadingLessons ? (
-                  <div className={`text-sm ${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/50'}`}>{isAr ? 'جاري تحميل الدروس...' : 'Loading lessons...'}</div>
+                  <div className="text-sm text-slate-400">{isAr ? 'جاري تحميل الدروس...' : 'Loading lessons...'}</div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+                  <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
                     {sortedLessons.map((lesson, index) => {
                       const isDone = completedLessons.has(lesson.id);
                       const isOpen = openLessonId === lesson.id;
@@ -820,73 +795,71 @@ export default function StudentDashboard() {
                       return (
                         <div
                           key={lesson.id}
-                          className={`border rounded-2xl p-5 transition-all duration-300 ${
+                          className={`rounded-2xl border p-5 transition-all duration-300 ${
                             locked
-                              ? `${isDark ? 'bg-black/30 border-[#C9A876]/10 opacity-50' : 'bg-[#EFE4D6]/60 border-[#C9A876]/20 opacity-70'}`
+                              ? 'border-white/10 bg-slate-950/50 opacity-60'
                               : isOpen
-                              ? `${isDark ? 'bg-[#2A0D12] border-[#8C3B3F]/60' : 'bg-white/70 border-[#8C3B3F]/50 shadow-[0_0_24px_rgba(140,59,63,0.12)]'}`
-                              : `${isDark ? 'bg-black/20 border-[#C9A876]/20 hover:border-[#C9A876]/50' : 'bg-white/60 border-[#C9A876]/25 hover:border-[#C9A876]/60'}`
+                              ? 'border-cyan-400/35 bg-slate-900/80 shadow-[0_0_24px_rgba(6,182,212,0.12)]'
+                              : 'border-white/10 bg-slate-900/60 hover:border-cyan-400/25'
                           }`}
                         >
                           <button
                             onClick={() => !locked && setOpenLessonId(isOpen ? null : lesson.id)}
                             disabled={locked}
-                            className={`w-full flex items-center gap-3 text-start ${
-                              locked ? 'cursor-not-allowed' : ''
-                            }`}
+                            className={`flex w-full items-center gap-3 text-start ${locked ? 'cursor-not-allowed' : ''}`}
                           >
                             <div
-                              className={`w-12 h-12 shrink-0 rounded-xl flex items-center justify-center text-lg ${
+                              className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-lg ${
                                 locked
-                                  ? 'bg-[#C9A876]/15 text-[#8C3B3F]/40'
+                                  ? 'bg-slate-800 text-slate-500'
                                   : contentKind === 'video'
-                                  ? `${isDark ? 'bg-[#5C1A24]/30 text-[#C9A876]' : 'bg-[#5C1A24]/10 text-[#5C1A24]'}`
+                                  ? 'bg-cyan-500/10 text-cyan-300'
                                   : contentKind === 'pdf'
-                                  ? 'bg-[#C9A876]/20 text-[#8C3B3F]'
-                                  : 'bg-[#E7C3B6]/30 text-[#8C3B3F]'
+                                  ? 'bg-violet-500/10 text-violet-300'
+                                  : 'bg-indigo-500/10 text-indigo-300'
                               }`}
                             >
                               {locked ? (
                                 '🔒'
                               ) : contentKind === 'video' ? (
-                                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                                <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 20 20">
                                   <path d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" />
                                 </svg>
                               ) : contentKind === 'pdf' ? (
-                                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                                <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 20 20">
                                   <path fillRule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z" clipRule="evenodd" />
                                 </svg>
                               ) : (
-                                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                                <svg className="h-6 w-6" fill="currentColor" viewBox="0 0 20 20">
                                   <path d="M11.983 1.907a.75.75 0 00-1.292-.657L4.204 9.507a.75.75 0 00.543 1.243h4.222l-1.688 6.943a.75.75 0 001.292.657l6.487-8.257a.75.75 0 00-.543-1.243h-4.222l1.688-6.943z" />
                                 </svg>
                               )}
                             </div>
                             <div className="min-w-0 flex-1">
-                              <span className={`text-xs uppercase tracking-wide ${locked ? 'text-[#8C3B3F]/40' : `${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}`}>
+                              <span className={`text-xs uppercase tracking-[0.16em] ${locked ? 'text-slate-500' : 'text-slate-400'}`}>
                                 {locked ? (isAr ? 'مقفل' : 'Locked') : `${contentLabel} · ${lesson.duration}`}
                               </span>
-                              <div className={`font-semibold truncate ${locked ? 'text-[#8C3B3F]/50' : `${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}`}>
+                              <div className={`truncate font-semibold ${locked ? 'text-slate-500' : 'text-white'}`}>
                                 {isAr ? lesson.title_ar : lesson.title_en}
                               </div>
                             </div>
                             {isDone && !locked && (
-                              <svg className="w-5 h-5 text-[#8C3B3F] shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <svg className="h-5 w-5 shrink-0 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                               </svg>
                             )}
                           </button>
 
                           {isOpen && !locked && (
-                            <div className="mt-4 pt-4 border-t border-[#C9A876]/25 space-y-3">
+                            <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
                               {lesson.videoUrl && (
-                                <div className="aspect-video rounded-xl overflow-hidden border border-[#C9A876]/25">
+                                <div className="aspect-video overflow-hidden rounded-xl border border-white/10 bg-slate-950/80">
                                   {(() => {
                                     const embedUrl = getYouTubeEmbedUrl(lesson.videoUrl);
                                     if (!embedUrl) {
                                       return (
-                                        <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-[#5C1A24]/10 to-[#C9A876]/10">
-                                          <p className={`text-sm ${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/60'}`}>
+                                        <div className="flex h-full w-full items-center justify-center bg-slate-950/80">
+                                          <p className="text-sm text-slate-400">
                                             {isAr ? 'رابط الفيديو غير صالح' : 'Invalid video URL'}
                                           </p>
                                         </div>
@@ -896,7 +869,7 @@ export default function StudentDashboard() {
                                       <iframe
                                         src={embedUrl}
                                         title={isAr ? lesson.title_ar : lesson.title_en}
-                                        className="w-full h-full"
+                                        className="h-full w-full"
                                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
                                         allowFullScreen
                                         referrerPolicy="strict-origin-when-cross-origin"
@@ -907,9 +880,9 @@ export default function StudentDashboard() {
                               )}
 
                               {!lesson.videoUrl && contentKind === 'video' && (
-                                <div className="aspect-video rounded-xl bg-gradient-to-br from-[#5C1A24]/10 to-[#C9A876]/10 border border-[#C9A876]/25 flex items-center justify-center">
-                                  <div className="w-14 h-14 rounded-full bg-[#5C1A24]/10 border border-[#C9A876]/40 flex items-center justify-center">
-                                    <svg className="w-6 h-6 text-[#5C1A24] ms-0.5" fill="currentColor" viewBox="0 0 20 20">
+                                <div className="flex aspect-video items-center justify-center rounded-xl border border-white/10 bg-gradient-to-br from-cyan-500/5 to-indigo-500/10">
+                                  <div className="flex h-14 w-14 items-center justify-center rounded-full border border-cyan-400/30 bg-cyan-500/10">
+                                    <svg className="ms-0.5 h-6 w-6 text-cyan-300" fill="currentColor" viewBox="0 0 20 20">
                                       <path d="M6 4l12 6-12 6V4z" />
                                     </svg>
                                   </div>
@@ -919,9 +892,9 @@ export default function StudentDashboard() {
                               {lesson.pdfUrl && (
                                 <button
                                   onClick={() => handleDownloadPdf(lesson)}
-                                  className="w-full py-2.5 rounded-xl bg-[#C9A876]/15 border border-[#C9A876]/40 text-[#8C3B3F] text-sm font-medium hover:bg-[#C9A876]/25 transition-all duration-300 flex items-center justify-center gap-2"
+                                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-400/25 bg-cyan-500/10 px-4 py-2.5 text-sm font-medium text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-500/15"
                                 >
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m-8 8h10a2 2 0 002-2V8a2 2 0 00-2-2h-3.586a1 1 0 01-.707-.293l-1.414-1.414A1 1 0 0011.586 4H6a2 2 0 00-2 2v10a2 2 0 002 2z" />
                                   </svg>
                                   {isAr ? 'تحميل ملخص PDF' : 'Download PDF Summary'}
@@ -929,14 +902,14 @@ export default function StudentDashboard() {
                               )}
 
                               {!lesson.videoUrl && !lesson.pdfUrl && (
-                                <div className={`rounded-xl border p-4 flex items-center justify-between gap-3 flex-wrap ${isDark ? 'border-[#C9A876]/30 bg-black/30' : 'border-[#E7C3B6]/50 bg-gradient-to-br from-[#5C1A24]/[0.05] to-[#E7C3B6]/20'}`}>
-                                  <span className={`text-sm font-medium ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-950/60 p-4">
+                                  <span className="text-sm font-medium text-slate-200">
                                     ⚡ {isAr ? 'جلسة مراجعة سريعة واختبار' : 'Quick Review & Quiz Session'}
                                   </span>
                                   {lesson.quiz && (
                                     <button
                                       onClick={() => startQuiz(lesson.id)}
-                                      className="px-4 py-2 rounded-lg bg-gradient-to-r from-[#5C1A24] to-[#C9A876] text-white text-xs font-semibold hover:brightness-110 transition-all duration-300"
+                                      className="rounded-lg bg-gradient-to-r from-cyan-500 to-indigo-500 px-4 py-2 text-xs font-semibold text-white transition hover:brightness-110"
                                     >
                                       {isAr ? 'ابدأ الاختبار' : 'Start Quiz'}
                                     </button>
@@ -945,31 +918,31 @@ export default function StudentDashboard() {
                               )}
 
                               {lesson.quiz ? (
-                                <div className="flex items-center justify-between px-1 py-1 gap-2">
-                                  <span className="text-xs font-medium text-[#8C3B3F]">
+                                <div className="flex items-center justify-between gap-2 px-1 py-1">
+                                  <span className="text-xs font-medium text-cyan-200">
                                     ⚠️ {isAr ? 'يجب اجتياز الاختبار لإتمام الدرس' : 'Must pass quiz to complete'}
                                   </span>
                                   {isDone && (
-                                    <span className={`text-xs shrink-0 ${isDark ? 'text-[#C9A876]' : 'text-[#5C1A24]'}`}>
+                                    <span className="shrink-0 text-xs text-emerald-300">
                                       {isAr ? 'مكتمل ✓' : 'Passed ✓'}
                                     </span>
                                   )}
                                 </div>
                               ) : (
-                                <label className="flex items-center justify-between px-1 py-1 cursor-pointer select-none">
-                                  <span className={`text-sm ${isDark ? 'text-[#F3E4D6]/70' : 'text-[#5C1A24]/70'}`}>
+                                <label className="flex cursor-pointer select-none items-center justify-between px-1 py-1">
+                                  <span className="text-sm text-slate-300">
                                     {isAr ? 'وضع علامة كمكتمل' : 'Mark as Completed'}
                                   </span>
                                   <button
                                     type="button"
                                     onClick={() => toggleLessonCompletion(lesson)}
-                                    className={`relative w-11 h-6 rounded-full transition-colors duration-300 ${
-                                      isDone ? 'bg-gradient-to-r from-[#5C1A24] to-[#C9A876]' : `${isDark ? 'bg-black/40 border-[#C9A876]/30' : 'bg-[#5C1A24]/[0.06] border-[#C9A876]/30'}`
+                                    className={`relative h-6 w-11 rounded-full transition-colors duration-300 ${
+                                      isDone ? 'bg-gradient-to-r from-cyan-500 to-indigo-500' : 'border border-white/10 bg-slate-900/80'
                                     }`}
                                   >
                                     <span
-                                      className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all duration-300 ${
-                                        isDone ? 'start-[calc(100%-1.375rem)]' : 'start-0.5'
+                                      className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-all duration-300 ${
+                                        isDone ? 'left-[calc(100%-1.375rem)]' : 'left-0.5'
                                       }`}
                                     />
                                   </button>
@@ -979,11 +952,132 @@ export default function StudentDashboard() {
                               {lesson.quiz && (lesson.videoUrl || lesson.pdfUrl) && (
                                 <button
                                   onClick={() => startQuiz(lesson.id)}
-                                  className={`w-full py-2.5 rounded-xl border text-sm font-semibold transition-all duration-300 flex items-center justify-center gap-2 shadow-[0_0_16px_rgba(201,168,118,0.12)] ${isDark ? 'bg-[#C9A876]/15 border-[#C9A876]/40 text-[#C9A876] hover:bg-[#C9A876]/25' : 'bg-gradient-to-r from-[#5C1A24]/10 to-[#C9A876]/20 border-[#C9A876]/40 text-[#5C1A24] hover:from-[#5C1A24]/15 hover:to-[#C9A876]/30'}`}
+                                  className="flex w-full items-center justify-center gap-2 rounded-xl border border-cyan-400/25 bg-cyan-500/10 px-4 py-2.5 text-sm font-semibold text-cyan-100 transition hover:border-cyan-300/50 hover:bg-cyan-500/15"
                                 >
                                   ✨ {isAr ? 'اختبر نفسك في هذا الدرس' : 'Take Lesson Quiz'}
                                 </button>
                               )}
+
+                              {lesson.activities && lesson.activities.length > 0 && (() => {
+                                const orderedActivities = getOrderedActivities(lesson.activities);
+                                const currentActivityId = activeActivityByLesson[lesson.id] ?? orderedActivities[0]?.id ?? null;
+                                const currentIndex = currentActivityId
+                                  ? orderedActivities.findIndex((activity) => activity.id === currentActivityId)
+                                  : -1;
+                                const currentActivity = currentIndex >= 0 ? orderedActivities[currentIndex] : null;
+                                const completedIds = lessonActivityCompletion[lesson.id] ?? new Set<string>();
+                                const lessonComplete = isLessonCompleteForActivities(orderedActivities, completedIds);
+
+                                return (
+                                  <div className="mt-4 space-y-4 border-t border-white/10 pt-4">
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                        {isAr ? 'المتصفح' : 'Lesson Player'}
+                                      </div>
+                                      {currentActivity && (
+                                        <div className="text-xs text-cyan-300">
+                                          {currentIndex + 1} / {orderedActivities.length}
+                                        </div>
+                                      )}
+                                    </div>
+
+                                    {currentActivity && (
+                                      <div className="rounded-2xl border border-white/10 bg-slate-950/70 p-4">
+                                        <div className="mb-4 flex items-center justify-between gap-3">
+                                          <div className="text-xs uppercase tracking-[0.2em] text-slate-400">
+                                            {isAr ? 'نشاط' : 'Activity'}
+                                          </div>
+                                          <div className="flex items-center gap-2 text-[11px] text-slate-400">
+                                            {orderedActivities.map((activity, idx) => (
+                                              <span
+                                                key={activity.id}
+                                                className={`inline-flex h-2.5 w-2.5 rounded-full ${
+                                                  idx < currentIndex
+                                                    ? 'bg-emerald-400'
+                                                    : idx === currentIndex
+                                                    ? 'bg-cyan-400'
+                                                    : 'bg-slate-700'
+                                                }`}
+                                              />
+                                            ))}
+                                          </div>
+                                        </div>
+
+                                        <ActivityRenderer
+                                          activity={currentActivity}
+                                          language={language}
+                                          isCompleted={completedIds.has(currentActivity.id)}
+                                          onComplete={(activityId, passed, score, total) => {
+                                            if (passed) {
+                                              markActivityCompleted(lesson, activityId);
+                                            }
+                                            if (lessonComplete) {
+                                              setCompletedLessons((prev) => new Set(prev).add(lesson.id));
+                                              void syncLessonCompletion(lesson.id, true);
+                                            }
+                                            if (score === total && passed && currentIndex < orderedActivities.length - 1) {
+                                              moveToActivity(lesson, orderedActivities[currentIndex + 1].id);
+                                            }
+                                          }}
+                                          onContinue={(activityId) => {
+                                            const activity = orderedActivities.find((item) => item.id === activityId);
+                                            if (activity) {
+                                              handleActivityContinue(lesson, activity);
+                                            }
+                                          }}
+                                          onSkip={(activityId) => {
+                                            const current = orderedActivities.find((item) => item.id === activityId);
+                                            if (!current) return;
+                                            const nextIndex = orderedActivities.findIndex((item) => item.id === current.id) + 1;
+                                            if (nextIndex < orderedActivities.length) {
+                                              moveToActivity(lesson, orderedActivities[nextIndex].id);
+                                              return;
+                                            }
+                                            setCompletedLessons((prev) => new Set(prev).add(lesson.id));
+                                            void syncLessonCompletion(lesson.id, true);
+                                          }}
+                                          initialQuizAnswers={quizAnswers}
+                                        />
+
+                                        <div className="mt-5 flex items-center justify-between gap-3">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              const prevIndex = currentIndex - 1;
+                                              if (prevIndex >= 0) {
+                                                moveToActivity(lesson, orderedActivities[prevIndex].id);
+                                              }
+                                            }}
+                                            disabled={currentIndex <= 0}
+                                            className="rounded-xl border border-white/10 bg-slate-900/80 px-3 py-2 text-sm font-medium text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                                          >
+                                            {isAr ? 'السابق' : 'Previous'}
+                                          </button>
+                                          <div className="text-xs text-slate-400">
+                                            {isAr ? 'إكمال النشاط' : 'Activity progress'}
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              if (currentIndex < orderedActivities.length - 1) {
+                                                moveToActivity(lesson, orderedActivities[currentIndex + 1].id);
+                                              } else {
+                                                setCompletedLessons((prev) => new Set(prev).add(lesson.id));
+                                                void syncLessonCompletion(lesson.id, true);
+                                              }
+                                            }}
+                                            className="rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-3 py-2 text-sm font-semibold text-white"
+                                          >
+                                            {currentIndex < orderedActivities.length - 1
+                                              ? (isAr ? 'التالي' : 'Next')
+                                              : (isAr ? 'إنهاء الدرس' : 'Finish lesson')}
+                                          </button>
+                                        </div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
                             </div>
                           )}
                         </div>
@@ -997,25 +1091,25 @@ export default function StudentDashboard() {
             {/* GRADES TAB */}
             {activeTab === 'grades' && (
               <div>
-                <h3 className={`font-display text-2xl font-bold mb-6 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                <h3 className="mb-6 text-2xl font-bold text-white">
                   {isAr ? 'درجاتي' : 'My Grades'}
                 </h3>
 
                 {/* Offline Exam Results */}
-                <div className={`backdrop-blur-xl rounded-[2rem] border transition-colors duration-500 mb-8 overflow-hidden shadow-xl ${isDark ? 'bg-[#2A0D12]/60 border-[#C9A876]/30 shadow-black/20' : 'bg-white/80 border-[#C9A876]/25 shadow-[#5C1A24]/5'}`}>
-                  <div className="p-6 sm:p-8 pb-4">
-                    <h4 className={`font-display text-lg font-bold mb-1 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
-                      {isAr ? 'الاختبارات الورقية' : 'Offline Exams'}
+                <div className="mb-8 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/60 shadow-[0_24px_80px_rgba(2,6,23,0.5)] backdrop-blur-xl">
+                  <div className="p-6 pb-4 sm:p-8">
+                    <h4 className="mb-1 text-lg font-bold text-white">
+                      {isAr ? 'التقييمات الورقية' : 'Offline Assessments'}
                     </h4>
-                    <p className={`text-xs ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
-                      {isAr ? 'نتائج الاختبارات التي تم تقييمها من قبل المعلمة' : 'Exam results graded by your teacher'}
+                    <p className="text-xs text-slate-400">
+                      {isAr ? 'نتائج الاختبارات التي تم تقييمها من قبل المعلم' : 'Exam results graded by your instructor'}
                     </p>
                   </div>
 
                   {loadingExamResults ? (
-                    <div className="px-6 sm:px-8 pb-8 space-y-2">{[0, 1].map((i) => (<div key={i} className={`h-16 rounded-xl animate-pulse ${isDark ? 'bg-white/5' : 'bg-[#5C1A24]/5'}`} />))}</div>
+                    <div className="space-y-2 px-6 pb-8 sm:px-8">{[0, 1].map((i) => (<div key={i} className="h-16 animate-pulse rounded-xl bg-white/5" />))}</div>
                   ) : examResults.length === 0 ? (
-                    <div className={`px-6 sm:px-8 pb-8 text-sm ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
+                    <div className="px-6 pb-8 text-sm text-slate-400 sm:px-8">
                       {isAr ? 'لا توجد نتائج اختبارات بعد' : 'No exam results yet'}
                     </div>
                   ) : (
@@ -1023,28 +1117,28 @@ export default function StudentDashboard() {
                       {examResults.map((result) => {
                         const percentage = Math.round((result.score / result.totalMarks) * 100);
                         return (
-                          <div key={result.id} className={`rounded-xl p-4 border ${isDark ? 'bg-black/20 border-[#C9A876]/10' : 'bg-white/60 border-[#C9A876]/20'}`}>
-                            <div className="flex items-start justify-between gap-4 mb-3">
+                          <div key={result.id} className="rounded-xl border border-white/10 bg-slate-950/60 p-4">
+                            <div className="mb-3 flex items-start justify-between gap-4">
                               <div>
-                                <h5 className={`font-semibold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>{result.examTitle}</h5>
-                                <p className={`text-xs ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
+                                <h5 className="font-semibold text-white">{result.examTitle}</h5>
+                                <p className="text-xs text-slate-400">
                                   {new Date(result.updatedAt).toLocaleDateString()}
                                 </p>
                               </div>
-                              <div className={`px-4 py-2 rounded-xl font-bold ${
-                                percentage >= 70 ? 'bg-emerald-500/10 text-emerald-600' :
-                                percentage >= 50 ? 'bg-amber-400/10 text-amber-600' :
-                                'bg-rose-500/10 text-rose-600'
+                              <div className={`rounded-xl px-4 py-2 text-sm font-bold ${
+                                percentage >= 70 ? 'bg-emerald-500/10 text-emerald-400' :
+                                percentage >= 50 ? 'bg-amber-500/10 text-amber-300' :
+                                'bg-rose-500/10 text-rose-400'
                               }`}>
                                 {percentage}%
                               </div>
                             </div>
                             <div className="flex items-center justify-between text-sm">
-                              <span className={isDark ? 'text-[#F3E4D6]/70' : 'text-[#5C1A24]/70'}>
+                              <span className="text-slate-300">
                                 {result.score} / {result.totalMarks} {isAr ? 'درجة' : 'marks'}
                               </span>
                               {result.feedback && (
-                                <span className={`text-xs ${isDark ? 'text-[#C9A876]' : 'text-[#5C1A24]'}`}>
+                                <span className="text-xs text-cyan-300">
                                   💬 {result.feedback}
                                 </span>
                               )}
@@ -1057,18 +1151,18 @@ export default function StudentDashboard() {
                 </div>
 
                 {/* Quiz Grades History */}
-                <div className={`backdrop-blur-xl rounded-[2rem] border transition-colors duration-500 overflow-hidden shadow-xl ${isDark ? 'bg-[#2A0D12]/60 border-[#C9A876]/30 shadow-black/20' : 'bg-white/80 border-[#C9A876]/25 shadow-[#5C1A24]/5'}`}>
-                  <div className="p-6 sm:p-8 pb-4">
-                    <h4 className={`font-display text-lg font-bold mb-1 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
-                      {isAr ? 'سجل اختبارات الدروس' : 'Quiz History'}
+                <div className="overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/60 shadow-[0_24px_80px_rgba(2,6,23,0.5)] backdrop-blur-xl">
+                  <div className="p-6 pb-4 sm:p-8">
+                    <h4 className="mb-1 text-lg font-bold text-white">
+                      {isAr ? 'سجل التقييمات البرمجية' : 'Coding Quiz History'}
                     </h4>
-                    <p className={`text-xs ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
-                      {isAr ? 'نتائج الاختبارات التفاعلية للدروس' : 'Interactive lesson quiz results'}
+                    <p className="text-xs text-slate-400">
+                      {isAr ? 'نتائج اختبارات الدروس التفاعلية' : 'Interactive lesson quiz results'}
                     </p>
                   </div>
 
                   {gradesLog.length === 0 ? (
-                    <div className={`px-6 sm:px-8 pb-8 text-sm ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
+                    <div className="px-6 pb-8 text-sm text-slate-400 sm:px-8">
                       {isAr ? 'لا توجد نتائج اختبارات دروس بعد' : 'No quiz results yet'}
                     </div>
                   ) : (
@@ -1076,12 +1170,12 @@ export default function StudentDashboard() {
                       {gradesLog.map((grade) => {
                         const pct = Math.round((grade.score / (grade.source === 'quiz' ? 10 : 100)) * 100);
                         return (
-                          <div key={grade.id} className={`flex items-center justify-between px-4 py-2.5 rounded-xl border ${isDark ? 'bg-black/20 border-[#C9A876]/10' : 'bg-white/60 border-[#C9A876]/15'}`}>
+                          <div key={grade.id} className="flex items-center justify-between rounded-xl border border-white/10 bg-slate-950/60 px-4 py-2.5">
                             <div>
-                              <p className={`text-xs sm:text-sm font-semibold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>{grade.quiz}</p>
-                              <p className={`text-[11px] ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>{grade.date}</p>
+                              <p className="text-xs font-semibold text-white sm:text-sm">{grade.quiz}</p>
+                              <p className="text-[11px] text-slate-400">{grade.date}</p>
                             </div>
-                            <span className={`text-sm font-bold ${pct >= 70 ? 'text-emerald-600' : pct >= 40 ? 'text-amber-600' : 'text-rose-500'}`}>{pct}%</span>
+                            <span className={`text-sm font-bold ${pct >= 70 ? 'text-emerald-400' : pct >= 40 ? 'text-amber-300' : 'text-rose-400'}`}>{pct}%</span>
                           </div>
                         );
                       })}
@@ -1094,32 +1188,32 @@ export default function StudentDashboard() {
             {/* ANNOUNCEMENTS TAB */}
             {activeTab === 'announcements' && (
               <div>
-                <h3 className={`font-display text-2xl font-bold mb-6 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
-                  {isAr ? 'الإعلانات' : 'Announcements'}
+                <h3 className="mb-6 text-2xl font-bold text-white">
+                  {isAr ? 'ملاحظات الإصدار' : 'Release Notes'}
                 </h3>
 
                 {loadingAnnouncements ? (
-                  <div className="space-y-4">{[0, 1].map((i) => (<div key={i} className={`h-24 rounded-xl animate-pulse ${isDark ? 'bg-white/5' : 'bg-[#5C1A24]/5'}`} />))}</div>
+                  <div className="space-y-4">{[0, 1].map((i) => (<div key={i} className="h-24 animate-pulse rounded-xl bg-white/5" />))}</div>
                 ) : announcements.length === 0 ? (
-                  <div className={`text-sm ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
+                  <div className="text-sm text-slate-400">
                     {isAr ? 'لا توجد إعلانات بعد' : 'No announcements yet'}
                   </div>
                 ) : (
                   <div className="space-y-4">
                     {announcements.map((announcement) => (
-                      <div key={announcement.id} className={`rounded-xl p-5 border ${isDark ? 'bg-black/20 border-[#C9A876]/10' : 'bg-white/60 border-[#C9A876]/20'}`}>
-                        <div className="flex items-start gap-3 mb-3">
+                      <div key={announcement.id} className="rounded-xl border border-white/10 bg-slate-950/60 p-5">
+                        <div className="mb-3 flex items-start gap-3">
                           {announcement.pinned && (
-                            <span className="text-lg">📌</span>
+                            <span className="text-lg text-cyan-300">📌</span>
                           )}
                           <div className="flex-1">
-                            <h4 className={`font-semibold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>{announcement.title}</h4>
-                            <p className={`text-xs ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
+                            <h4 className="font-semibold text-white">{announcement.title}</h4>
+                            <p className="text-xs text-slate-400">
                               {announcement.author} · {new Date(announcement.createdAt).toLocaleDateString()}
                             </p>
                           </div>
                         </div>
-                        <p className={`text-sm whitespace-pre-wrap ${isDark ? 'text-[#F3E4D6]/80' : 'text-[#5C1A24]/80'}`}>
+                        <p className="whitespace-pre-wrap text-sm text-slate-300">
                           {announcement.content}
                         </p>
                       </div>
@@ -1134,18 +1228,18 @@ export default function StudentDashboard() {
               <div>
                 {activeQuiz && activeLesson ? (
                   <>
-                    <div className="flex items-center justify-between mb-2 gap-3">
-                      <h3 className={`font-display text-2xl font-bold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <h3 className="text-2xl font-bold text-white">
                         {isAr ? activeQuiz.quizTitle_ar : activeQuiz.quizTitle_en}
                       </h3>
                       <button
                         onClick={() => setActiveQuizLessonId(null)}
-                        className={`text-xs transition-colors ${isDark ? 'text-[#F3E4D6]/60 hover:text-[#F3E4D6]' : 'text-[#5C1A24]/60 hover:text-[#5C1A24]'}`}
+                        className="text-xs text-slate-400 transition hover:text-white"
                       >
-                        {isAr ? 'كل الاختبارات' : 'All quizzes'}
+                        {isAr ? 'كل التقييمات' : 'All assessments'}
                       </button>
                     </div>
-                    <p className={`text-sm mb-6 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
+                    <p className="mb-6 text-sm text-slate-400">
                       {isAr
                         ? `أجب عن الأسئلة ثم أرسل إجاباتك — تحتاج ${PASSING_SCORE_PERCENT}% لإتمام الدرس`
                         : `Answer the questions, then submit — you need ${PASSING_SCORE_PERCENT}% to complete this lesson`}
@@ -1153,38 +1247,35 @@ export default function StudentDashboard() {
 
                     <div className="space-y-6 mb-8">
                       {activeQuiz.questions.map((q, qIdx) => (
-                        <div key={qIdx} className={`border rounded-2xl p-5 ${isDark ? 'bg-black/20 border-[#C9A876]/25' : 'bg-white/60 border-[#C9A876]/25'}`}>
-                          <div className={`font-semibold mb-4 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                        <div key={qIdx} className="rounded-2xl border border-white/10 bg-slate-950/60 p-5">
+                          <div className="mb-4 font-semibold text-white">
                             {qIdx + 1}. {isAr ? q.ar : q.en}
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                             {q.options.map((opt, optIdx) => {
                               const selected = quizAnswers[qIdx] === optIdx;
                               const isCorrectOpt = optIdx === q.correct;
-                            let stateClasses = isDark ? 'border-[#C9A876]/30 text-[#F3E4D6]/70 hover:border-[#C9A876]/60 hover:bg-white/5' : 'border-[#C9A876]/30 text-[#5C1A24]/70 hover:border-[#C9A876]/60 hover:bg-[#C9A876]/[0.06]';
+                            let stateClasses = 'border-white/10 bg-slate-900/80 text-slate-200 hover:border-cyan-400/35 hover:bg-slate-800';
 
-if (quizSubmitted) {
-  // 🌟 لو الطالب جاب أكتر من 60% (نجح)، أظهر له الإجابات الصح والخطأ عادي
-  if (quizResult?.passed) {
-    if (isCorrectOpt) {
-      stateClasses = 'border-[#8C3B3F]/60 bg-[#8C3B3F]/20 text-[#C9A876] font-bold';
-    } else if (selected && !isCorrectOpt) {
-      stateClasses = 'border-rose-400/60 bg-rose-400/10 text-rose-500';
-    } else {
-      stateClasses = isDark ? 'border-[#C9A876]/10 text-[#F3E4D6]/20' : 'border-[#C9A876]/15 text-[#5C1A24]/30';
-    }
-  } 
-  // 🌟 لو جاب أقل من 60% (سقط)، ويه بس إيه إجابته الغلط من غير ما تفضح له الإجابة الصح عشان يفكر تاني!
-  else {
-    if (selected && !isCorrectOpt) {
-      stateClasses = 'border-rose-400/60 bg-rose-400/10 text-rose-500 font-semibold'; // نبين إجابته إنه غلط بس
-    } else {
-      stateClasses = isDark ? 'border-[#C9A876]/20 text-[#F3E4D6]/50' : 'border-[#C9A876]/30 text-[#5C1A24]/50'; // نخفي الإجابة الصح ونتركها عادية
-    }
-  }
-} else if (selected) {
-  stateClasses = isDark ? 'border-[#C9A876] bg-[#5C1A24]/40 text-white' : 'border-[#5C1A24]/60 bg-[#5C1A24]/10 text-[#2E1013]';
-}
+                            if (quizSubmitted) {
+                              if (quizResult?.passed) {
+                                if (isCorrectOpt) {
+                                  stateClasses = 'border-emerald-400/60 bg-emerald-500/10 text-emerald-300 font-bold';
+                                } else if (selected && !isCorrectOpt) {
+                                  stateClasses = 'border-rose-400/60 bg-rose-500/10 text-rose-300';
+                                } else {
+                                  stateClasses = 'border-white/10 bg-slate-950/60 text-slate-500';
+                                }
+                              } else {
+                                if (selected && !isCorrectOpt) {
+                                  stateClasses = 'border-rose-400/60 bg-rose-500/10 text-rose-300 font-semibold';
+                                } else {
+                                  stateClasses = 'border-white/10 bg-slate-950/60 text-slate-500';
+                                }
+                              }
+                            } else if (selected) {
+                              stateClasses = 'border-cyan-400/60 bg-cyan-500/10 text-white';
+                            }
                               return (
                                 <button
                                   key={optIdx}
@@ -1205,7 +1296,7 @@ if (quizSubmitted) {
                       <button
                         onClick={submitQuiz}
                         disabled={!allAnswered}
-                        className="w-full sm:w-auto px-8 py-3.5 rounded-2xl bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] text-white font-semibold hover:shadow-[0_8px_28px_rgba(92,26,36,0.35)] hover:brightness-110 transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+                        className="w-full rounded-2xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-8 py-3.5 font-semibold text-white shadow-lg shadow-cyan-500/15 transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 sm:w-auto"
                       >
                         {isAr ? 'إرسال الاختبار' : 'Submit Quiz'}
                       </button>
@@ -1214,20 +1305,20 @@ if (quizSubmitted) {
                         <div className="space-y-3 mb-2">
                           <div className="flex flex-col sm:flex-row items-center gap-5">
                             <div
-                              className={`flex items-center gap-3 px-6 py-4 rounded-2xl border ${
+                              className={`flex items-center gap-3 rounded-2xl border px-6 py-4 ${
                                 quizResult.passed
-                                  ? 'bg-[#C9A876]/15 border-[#C9A876]/50'
-                                  : 'bg-rose-400/10 border-rose-400/40'
+                                  ? 'border-emerald-400/40 bg-emerald-500/10'
+                                  : 'border-rose-400/40 bg-rose-500/10'
                               } ${quizResult.passed ? 'animate-pulse' : ''}`}
                             >
                               <span className="text-3xl">
                                 {quizResult.passed ? '🏆' : '🔬'}
                               </span>
                               <div>
-                                <div className={`text-xl font-bold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                                <div className="text-xl font-bold text-white">
                                   {quizResult.score} / {quizResult.total}
                                 </div>
-                                <div className={`text-xs ${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/60'}`}>
+                                <div className="text-xs text-slate-300">
                                   {savingResult
                                     ? isAr ? 'جارٍ حفظ النتيجة...' : 'Saving your result...'
                                     : isAr ? 'نتيجتك في الاختبار' : 'Your quiz score'}
@@ -1236,33 +1327,33 @@ if (quizSubmitted) {
                             </div>
                             <button
                               onClick={retakeQuiz}
-                              className={`px-6 py-3 rounded-2xl border font-medium transition-all duration-300 ${isDark ? 'bg-white/5 border-[#C9A876]/30 text-[#C9A876] hover:bg-white/10' : 'bg-[#5C1A24]/[0.06] border-[#C9A876]/30 text-[#5C1A24] hover:bg-[#C9A876]/[0.1]'}`}
+                              className="rounded-2xl border border-white/10 bg-slate-950/80 px-6 py-3 font-medium text-slate-100 transition hover:border-cyan-400/35 hover:text-white"
                             >
                               {isAr ? 'إعادة المحاولة' : 'Retake Quiz'}
                             </button>
                           </div>
-                        <p className={`text-sm font-medium ${quizResult.passed ? 'text-[#8C3B3F]' : 'text-rose-500'}`}>
-  {quizResult.passed
-    ? '🎉 ' + (isAr ? 'ممتاز! تم فتح الدرس التالي وعرض الإجابات الصحيحة.' : 'Awesome! Lesson complete — next lesson unlocked!')
-    : isAr
-    ? `⚠️ لم تجتز الاختبار (${quizResult.score}/${quizResult.total}). راجع الأسئلة المحددة باللون الأحمر وفكر فيها مجددًا ثم اضغط إعادة المحاولة.`
-    : `⚠️ You didn't pass yet. Review your incorrect answers highlighted in red, think about them, and retry.`}
-</p>
+                        <p className={`text-sm font-medium ${quizResult.passed ? 'text-emerald-300' : 'text-rose-300'}`}>
+                          {quizResult.passed
+                            ? '🎉 ' + (isAr ? 'ممتاز! تم فتح الدرس التالي وظهرت الإجابات الصحيحة.' : 'Awesome! Lesson complete — next lesson unlocked!')
+                            : isAr
+                              ? `⚠️ لم تجتز الاختبار (${quizResult.score}/${quizResult.total}). راجع الأسئلة المحددة باللون الأحمر ثم حاول مرة أخرى.`
+                              : `⚠️ You didn't pass yet. Review the highlighted answers in red, then retry.`}
+                        </p>
                         </div>
                       )
                     )}
                   </>
                 ) : (
                   <>
-                    <h3 className={`font-display text-2xl font-bold mb-2 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
-                      {isAr ? 'الاختبارات التفاعلية' : 'Interactive Quizzes'}
+                    <h3 className="mb-2 text-2xl font-bold text-white">
+                      {isAr ? 'التقييمات البرمجية' : 'Coding Assessments'}
                     </h3>
-                    <p className={`text-sm mb-6 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
-                      {isAr ? 'اختر درسًا لبدء اختباره' : 'Pick a lesson quiz to get started'}
+                    <p className="mb-6 text-sm text-slate-400">
+                      {isAr ? 'اختر وحدة لبدء تقييمها' : 'Pick a module to start the assessment'}
                     </p>
 
                     {quizzableLessons.length === 0 ? (
-                      <p className={`text-sm mb-8 ${isDark ? 'text-[#F3E4D6]/40' : 'text-[#5C1A24]/40'}`}>
+                      <p className="mb-8 text-sm text-slate-400">
                         {isAr
                           ? 'لا توجد اختبارات متاحة الآن — أكمل الدرس الحالي لفتح المزيد.'
                           : 'No quizzes available right now — finish your current lesson to unlock more.'}
@@ -1272,19 +1363,19 @@ if (quizSubmitted) {
                         {quizzableLessons.map((lesson) => (
                           <div
                             key={lesson.id}
-                            className={`border rounded-2xl p-5 transition-all duration-300 ${isDark ? 'bg-black/20 border-[#C9A876]/25 hover:border-[#C9A876]/60' : 'bg-white/60 border-[#C9A876]/25 hover:border-[#C9A876]/60'}`}
+                            className="rounded-2xl border border-white/10 bg-slate-950/60 p-5 transition-all duration-300 hover:border-cyan-400/25"
                           >
-                            <div className={`text-xs uppercase tracking-wide mb-1 ${isDark ? 'text-[#F3E4D6]/50' : 'text-[#5C1A24]/50'}`}>
+                            <div className="mb-1 text-xs uppercase tracking-[0.16em] text-slate-400">
                               {isAr ? lesson.title_ar : lesson.title_en}
                             </div>
-                            <div className={`font-semibold mb-4 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
+                            <div className="mb-4 font-semibold text-white">
                               {isAr ? lesson.quiz?.quizTitle_ar : lesson.quiz?.quizTitle_en}
                             </div>
                             <button
                               onClick={() => startQuiz(lesson.id)}
-                              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#5C1A24] to-[#C9A876] text-white text-sm font-semibold hover:brightness-110 transition-all duration-300"
+                              className="w-full rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110"
                             >
-                              {isAr ? 'ابدأ الاختبار' : 'Start Quiz'}
+                              {isAr ? 'ابدأ التقييم' : 'Start Assessment'}
                             </button>
                           </div>
                         ))}
@@ -1295,23 +1386,23 @@ if (quizSubmitted) {
 
                 {/* Grades history */}
                 <div className="mt-10">
-                  <h4 className={`font-display text-xl font-bold mb-4 ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>
-                    {isAr ? 'سجل الدرجات' : 'Grades History'}
+                  <h4 className="mb-4 text-xl font-bold text-white">
+                    {isAr ? 'سجل الدرجات' : 'Grade History'}
                   </h4>
                   <div className="space-y-3">
                     {gradesLog.map((grade) => (
                       <div
                         key={grade.id}
-                        className={`border rounded-2xl p-5 flex items-center justify-between gap-4 ${isDark ? 'bg-black/20 border-[#C9A876]/25' : 'bg-white/60 border-[#C9A876]/25'}`}
+                        className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-slate-950/60 p-5"
                       >
                         <div className="min-w-0">
-                          <div className={`font-semibold ${isDark ? 'text-[#F3E4D6]' : 'text-[#2E1013]'}`}>{grade.subject}</div>
-                          <div className={`text-sm truncate ${isDark ? 'text-[#F3E4D6]/60' : 'text-[#5C1A24]/50'}`}>{grade.quiz}</div>
-                          <div className={`text-xs ${isDark ? 'text-[#F3E4D6]/30' : 'text-[#5C1A24]/30'}`}>{grade.date}</div>
+                          <div className="font-semibold text-white">{grade.subject}</div>
+                          <div className="truncate text-sm text-slate-400">{grade.quiz}</div>
+                          <div className="text-xs text-slate-500">{grade.date}</div>
                         </div>
                         <div
-                          className={`text-2xl sm:text-3xl font-bold shrink-0 ${
-                            grade.score >= 90 ? 'text-[#8C3B3F]' : grade.score >= 80 ? 'text-[#C9A876]' : 'text-rose-500'
+                          className={`shrink-0 text-2xl font-bold sm:text-3xl ${
+                            grade.score >= 90 ? 'text-emerald-400' : grade.score >= 80 ? 'text-cyan-300' : 'text-rose-400'
                           }`}
                         >
                           {grade.score}%
@@ -1329,21 +1420,3 @@ if (quizSubmitted) {
   );
 }
 
-function FontStyles() {
-  return (
-    <style>{`
-      @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700&display=swap');
-      .font-display { font-family: 'Fraunces', serif; font-optical-sizing: auto; }
-      .font-body { font-family: 'Manrope', sans-serif; }
-
-      @keyframes orbit-spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-      }
-      .orbit-ring { animation: orbit-spin 7s linear infinite; transform-origin: center; }
-      @media (prefers-reduced-motion: reduce) {
-        .orbit-ring { animation: none; }
-      }
-    `}</style>
-  );
-}

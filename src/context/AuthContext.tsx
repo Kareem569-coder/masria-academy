@@ -8,8 +8,11 @@ import {
   onAuthStateChanged,
   User 
 } from 'firebase/auth';
-import { doc, getDoc, setDoc, query, collection, where, getDocs, updateDoc, arrayUnion } from 'firebase/firestore';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
+import { isTeacherEmail } from '@/lib/authorization';
+import { createStudentLinkCode, linkStudentToParent } from '@/lib/firestore/parentLinking';
+import type { UserProfile } from '@/types/models';
 
 interface AuthContextType {
   user: User | null;
@@ -49,8 +52,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const userDoc = await getDoc(doc(db, 'users', currentUser.uid));
         if (userDoc.exists()) {
           const userData = userDoc.data();
-          const TEACHER_EMAIL = "mariam@nucleus.com";
-          const isTeacher = currentUser.email && currentUser.email.trim().toLowerCase() === TEACHER_EMAIL;
+          const isTeacher = isTeacherEmail(currentUser.email);
 
           // إذا كان طالباً وحالته pending، نمنع دخوله بتسجيل الخروج بهدوء
           if (!isTeacher && userData.role === 'student' && userData.status === 'pending') {
@@ -78,8 +80,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [isSignupInProgress]);
 
   const login = async (email: string, password: string) => {
-    const TEACHER_EMAIL = "mariam@nucleus.com";
-    const isTeacher = email.trim().toLowerCase() === TEACHER_EMAIL;
+    const isTeacher = isTeacherEmail(email);
 
     const userCredential = await signInWithEmailAndPassword(auth, email, password);
     const user = userCredential.user;
@@ -90,7 +91,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       
       if (!isTeacher && userData.role === 'student' && userData.status === 'pending') {
         await signOut(auth);
-        throw new Error('حسابك قيد المراجعة في انتظار موافقة المعلمة مريم.');
+        throw new Error('حسابك قيد المراجعة في انتظار موافقة إدارة MASRIA.');
       }
 
       return { role: userData.role as 'student' | 'parent' };
@@ -100,8 +101,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const signup = async (name: string, email: string, password: string, role: 'student' | 'parent', gradeLevel?: string) => {
-    const TEACHER_EMAIL = "mariam@nucleus.com";
-    const isTeacher = email.trim().toLowerCase() === TEACHER_EMAIL;
+    const isTeacher = isTeacherEmail(email);
 
     // Set flag to prevent auth state listener from interfering
     setIsSignupInProgress(true);
@@ -113,7 +113,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const user = userCredential.user;
       console.log("Auth user created:", user.uid);
 
-      let linkCode = null;
+      let linkCode: string | undefined;
       if (role === 'student') {
         const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
         let code = 'NUC-';
@@ -128,7 +128,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setTimeout(() => reject(new Error('Firestore operation timeout after 30 seconds')), 30000)
       );
 
-      let userData: any;
+      let userData: UserProfile;
       if (isTeacher) {
         userData = {
           name,
@@ -154,6 +154,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           role,
           status: 'active',
           linkedStudents: [],
+          linkedStudentIds: [],
           createdAt: new Date().toISOString()
         };
       }
@@ -165,6 +166,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setDoc(doc(db, 'users', user.uid), userData),
         firestoreTimeout
       ]);
+
+      if (role === 'student' && linkCode) {
+        await createStudentLinkCode(linkCode, user.uid, userData.createdAt || new Date().toISOString());
+      }
       
       console.log("User data saved successfully");
 
@@ -183,42 +188,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const linkStudent = async (parentUid: string, linkCode: string) => {
-    const q = query(collection(db, 'users'), where('linkCode', '==', linkCode));
-    const querySnapshot = await getDocs(q);
-
-    if (querySnapshot.empty) {
-      throw new Error('Invalid link code. No student found with this code.');
-    }
-
-    const studentDoc = querySnapshot.docs[0];
-    const studentData = studentDoc.data();
-
-    if (studentData.role !== 'student') {
-      throw new Error('This code is not for a student account.');
-    }
-
-    const parentDoc = await getDoc(doc(db, 'users', parentUid));
-    if (!parentDoc.exists()) {
-      throw new Error('Parent account not found.');
-    }
-
-    const parentData = parentDoc.data();
-    const linkedStudents = parentData.linkedStudents || [];
-
-    const alreadyLinked = linkedStudents.some((s: any) => s.uid === studentDoc.id);
-    if (alreadyLinked) {
-      throw new Error('This student is already linked to your account.');
-    }
-
-    await updateDoc(doc(db, 'users', parentUid), {
-      linkedStudents: arrayUnion({
-        uid: studentDoc.id,
-        name: studentData.name,
-        email: studentData.email,
-        gradeLevel: studentData.gradeLevel || 'Grade 4',
-        linkedAt: new Date().toISOString()
-      })
-    });
+    await linkStudentToParent(parentUid, linkCode);
   };
 
   return (

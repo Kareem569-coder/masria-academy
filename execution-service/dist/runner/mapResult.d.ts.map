@@ -1,0 +1,1 @@
+{"version":3,"file":"mapResult.d.ts","sourceRoot":"","sources":["../../src/runner/mapResult.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAA0B,gBAAgB,EAAE,eAAe,EAAE,MAAM,uBAAuB,CAAC;AAGvG,OAAO,KAAK,EAAE,gBAAgB,EAAE,MAAM,qBAAqB,CAAC;AAQ5D,wBAAgB,oCAAoC,CAClD,OAAO,EAAE,gBAAgB,EACzB,MAAM,EAAE,gBAAgB,EACxB,MAAM,CAAC,EAAE;IAAE,SAAS,CAAC,EAAE,OAAO,CAAA;CAAE,GAC/B,eAAe,CA6DjB"}

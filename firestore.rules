@@ -1,0 +1,303 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Teacher access is intentionally allowlisted here as well as in the client.
+    // Firebase Security Rules are the enforcement boundary; client checks are not.
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isTeacher() {
+      return isAuthenticated()
+        && request.auth.token.email in [
+          'aymankareem548@gmail.com',
+          'mariam@masria.academy'
+        ];
+    }
+
+    function currentUser() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function isStudent() {
+      return isAuthenticated() && currentUser().data.role == 'student';
+    }
+
+    function isParent() {
+      return isAuthenticated() && currentUser().data.role == 'parent';
+    }
+
+    function isActiveLearner() {
+      return isAuthenticated()
+        && currentUser().data.status == 'active'
+        && currentUser().data.role in ['student', 'parent'];
+    }
+
+    // Parent documents should maintain this normalized array alongside the
+    // display-oriented linkedStudents array: ['studentUid1', 'studentUid2'].
+    function isLinkedParent(studentId) {
+      return isParent()
+        && studentId in (
+          currentUser().data.keys().hasAny(['linkedStudentIds'])
+            ? currentUser().data.linkedStudentIds
+            : []
+        );
+    }
+
+    function isValidParentLinkUpdate() {
+      return isParent()
+        && request.resource.data.linkedStudentIds.size() == (
+          resource.data.keys().hasAny(['linkedStudentIds'])
+            ? resource.data.linkedStudentIds.size()
+            : 0
+        ) + 1
+        && request.resource.data.linkedStudentIds.hasAll(
+          resource.data.keys().hasAny(['linkedStudentIds'])
+            ? resource.data.linkedStudentIds
+            : []
+        )
+        && (!resource.data.keys().hasAny(['lastLinkedCode'])
+          || request.resource.data.lastLinkedCode != resource.data.lastLinkedCode)
+        && getAfter(/databases/$(database)/documents/linkCodes/$(request.resource.data.lastLinkedCode)).data.active == false
+        && getAfter(/databases/$(database)/documents/linkCodes/$(request.resource.data.lastLinkedCode)).data.linkedBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/linkCodes/$(request.resource.data.lastLinkedCode)).data.studentId in request.resource.data.linkedStudentIds;
+    }
+
+    // A parent starts with no relationships. Student IDs may only be added by
+    // isValidParentLinkUpdate(), which atomically claims a valid link code.
+    function hasNoParentLinksOnCreate() {
+      return (!request.resource.data.keys().hasAny(['linkedStudentIds'])
+          || request.resource.data.linkedStudentIds.size() == 0)
+        && (!request.resource.data.keys().hasAny(['linkedStudents'])
+          || request.resource.data.linkedStudents.size() == 0)
+        && !request.resource.data.keys().hasAny(['lastLinkedCode']);
+    }
+
+    function canReadStudentRecord(studentId) {
+      return isTeacher()
+        || (isStudent() && isOwner(studentId))
+        || isLinkedParent(studentId);
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated()
+        && (isOwner(userId) || isTeacher() || isLinkedParent(userId));
+
+      // Signup creates the profile immediately after Firebase Auth succeeds.
+      allow create: if isOwner(userId)
+        && ((isTeacher()
+          && request.resource.data.role == 'student'
+          && request.resource.data.status == 'active')
+        || (!isTeacher()
+          && request.resource.data.role == 'student'
+          && request.resource.data.status == 'pending')
+        || (!isTeacher()
+          && request.resource.data.role == 'parent'
+          && request.resource.data.status == 'active'
+          && hasNoParentLinksOnCreate()));
+
+      // Owners may update profile data such as completedLessons, but cannot
+      // promote themselves, change role, or bypass approval status.
+      allow update: if (isTeacher()
+          && resource.data.role == 'student'
+          && request.resource.data.role == resource.data.role)
+        || (isOwner(userId)
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.status == resource.data.status
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['linkedStudentIds', 'lastLinkedCode'])
+            || isValidParentLinkUpdate()));
+
+      allow delete: if isTeacher() && resource.data.role == 'student';
+    }
+
+    match /lessons/{lessonId} {
+      allow read: if isTeacher()
+        || (isActiveLearner()
+          && resource.data.isPublished == true
+          && (isParent()
+            || currentUser().data.gradeLevel == resource.data.gradeLevel));
+      allow create, update, delete: if isTeacher();
+    }
+
+    match /exams/{examId} {
+      allow read: if isTeacher()
+        || (isActiveLearner()
+          && currentUser().data.gradeLevel == resource.data.gradeLevel);
+      allow create, update, delete: if isTeacher();
+    }
+
+    match /exam_results/{resultId} {
+      allow read: if canReadStudentRecord(resource.data.studentId);
+      allow create, update: if isTeacher();
+      allow delete: if isTeacher();
+    }
+
+    match /performance/{performanceId} {
+      allow read: if canReadStudentRecord(resource.data.studentId);
+
+      allow create: if isStudent()
+        && currentUser().data.status == 'active'
+        && request.resource.data.studentId == request.auth.uid;
+
+      allow update: if isTeacher();
+
+      allow delete: if isTeacher();
+    }
+
+    match /announcements/{announcementId} {
+      allow read: if isTeacher() || isActiveLearner();
+      allow create, update, delete: if isTeacher();
+    }
+
+    match /linkCodes/{linkCode} {
+      allow read: if isTeacher()
+        || (isParent() && (resource.data.active == true || resource.data.linkedBy == request.auth.uid));
+
+      allow create: if isAuthenticated()
+        && request.resource.data.studentId == request.auth.uid
+        && request.resource.data.active == true
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'student';
+
+      allow update: if isTeacher()
+        || (isParent()
+          && resource.data.active == true
+          && request.resource.data.active == false
+          && request.resource.data.studentId == resource.data.studentId
+          && request.resource.data.linkedBy == request.auth.uid
+          && request.resource.data.createdAt == resource.data.createdAt);
+
+      allow delete: if isTeacher();
+    }
+
+    function isSupportedProgrammingLanguage(language) {
+      return language in ['cpp17', 'python3', 'java17', 'javascript-node'];
+    }
+
+    // Student-created submissions are source-only. Authoritative verdicts, scores,
+    // mastery, and evaluator metadata belong in coding_evaluations / progress.
+    function isValidStudentCodingSubmission() {
+      return request.resource.data.keys().hasAll([
+          'studentId',
+          'lessonId',
+          'activityId',
+          'challengeVersion',
+          'language',
+          'sourceCode',
+          'status',
+          'submittedAt'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'id',
+          'studentId',
+          'lessonId',
+          'activityId',
+          'challengeVersion',
+          'language',
+          'sourceCode',
+          'status',
+          'submittedAt',
+          'idempotencyKey'
+        ])
+        && !request.resource.data.keys().hasAny([
+          'verdict',
+          'scorePercent',
+          'passed',
+          'mastery',
+          'passedTestCount',
+          'totalTestCount',
+          'publicTestResults',
+          'evaluatorVersion',
+          'evaluatedAt',
+          'executionTimeMs',
+          'memoryUsedKb',
+          'feedback_en',
+          'feedback_ar'
+        ])
+        && request.resource.data.studentId == request.auth.uid
+        && request.resource.data.lessonId is string
+        && request.resource.data.lessonId.size() > 0
+        && request.resource.data.activityId is string
+        && request.resource.data.activityId.size() > 0
+        && request.resource.data.challengeVersion is int
+        && request.resource.data.challengeVersion > 0
+        && isSupportedProgrammingLanguage(request.resource.data.language)
+        && request.resource.data.sourceCode is string
+        && request.resource.data.sourceCode.size() > 0
+        && request.resource.data.sourceCode.size() <= 100000
+        && request.resource.data.status == 'queued'
+        && request.resource.data.submittedAt is string
+        && request.resource.data.submittedAt.size() > 0
+        && (!request.resource.data.keys().hasAny(['id'])
+          || (request.resource.data.id is string && request.resource.data.id.size() > 0))
+        && (!request.resource.data.keys().hasAny(['idempotencyKey'])
+          || (request.resource.data.idempotencyKey is string
+            && request.resource.data.idempotencyKey.size() > 0
+            && request.resource.data.idempotencyKey.size() <= 256));
+    }
+
+    // ============================================================================
+    // CODING SUBMISSIONS
+    // ============================================================================
+    // Students may create their own source-only submissions. Documents are
+    // immutable after create. Status/result writes are reserved for a future
+    // trusted execution service (Admin SDK / service account).
+    match /coding_submissions/{submissionId} {
+      allow read: if canReadStudentRecord(resource.data.studentId);
+
+      allow create: if isStudent()
+        && currentUser().data.status == 'active'
+        && isValidStudentCodingSubmission();
+
+      allow update, delete: if false;
+    }
+
+    // ============================================================================
+    // CODING EVALUATIONS
+    // ============================================================================
+    // Only the trusted execution service can create evaluations.
+    // Students cannot create or update evaluations to prevent result forgery.
+    match /coding_evaluations/{evaluationId} {
+      allow read: if canReadStudentRecord(resource.data.studentId);
+
+      // Students cannot create evaluations
+      // Only trusted execution service (via admin SDK or service account) can create
+      allow create: if false;
+
+      // Evaluations are immutable once created
+      allow update, delete: if false;
+    }
+
+    // ============================================================================
+    // CODING ACTIVITY PROGRESS
+    // ============================================================================
+    // Only the trusted execution service can authoritatively update progress.
+    // Students can read their own progress but cannot modify it.
+    match /coding_activity_progress/{progressId} {
+      allow read: if canReadStudentRecord(resource.data.studentId);
+
+      // Students cannot create or update progress authoritatively
+      // Only trusted execution service (via admin SDK or service account) can update
+      allow create, update, delete: if false;
+    }
+
+    // ============================================================================
+    // PRIVATE CHALLENGE CONFIGURATION
+    // ============================================================================
+    // Private test cases and reference solutions are accessible only to teachers.
+    // Students must never access this collection.
+    match /private_challenge_config/{configId} {
+      allow read: if isTeacher();
+      allow create, update, delete: if isTeacher();
+    }
+
+    // Deny every collection/document not explicitly listed above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

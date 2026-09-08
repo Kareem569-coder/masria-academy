@@ -4,6 +4,8 @@ import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
 import { useRouter } from 'next/navigation';
 import { useState, useEffect, useMemo, useCallback } from 'react';
+import DashboardNavbar from '@/components/DashboardNavbar';
+import ConfirmModal from '@/components/ConfirmModal';
 import {
   collection,
   getDocs,
@@ -13,26 +15,24 @@ import {
   updateDoc,
   deleteDoc,
   addDoc,
-  writeBatch,
-  WriteBatch,
+  setDoc,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { getErrorMessage } from '@/types/models';
+import { isTeacherEmail } from '@/lib/authorization';
+import ActivityBuilder, { validateActivityList } from '@/components/teacher/ActivityBuilder';
+import type { Activity, Announcement as AnnouncementModel, Exam as ExamModel, PerformanceRecord, StudentStatus as StudentStatusModel, LessonCategory } from '@/types/models';
 
-const ADMIN_EMAIL = 'mariam@nucleus.com';
+const isAdminEmail = (email?: string | null) => {
+  return isTeacherEmail(email);
+};
 
 type Theme = 'light' | 'dark';
-type StudentStatus = 'pending' | 'active' | 'suspended' | string;
+type StudentStatus = StudentStatusModel;
 type LessonType = 'video' | 'pdf' | 'quiz_only' | 'hybrid';
+type ActiveSection = 'analytics' | 'students' | 'repository' | 'addLesson' | 'exams' | 'announcements';
 
-interface Announcement {
-  id: string;
-  title: string;
-  content: string;
-  gradeLevel: string;
-  author: string;
-  pinned: boolean;
-  createdAt: string;
-}
+type Announcement = AnnouncementModel;
 
 interface StudentRow {
   id: string;
@@ -43,14 +43,7 @@ interface StudentRow {
   createdAt?: string;
 }
 
-interface PerformanceRow {
-  id: string;
-  studentId?: string;
-  quizTitle?: string;
-  score: number;
-  total: number;
-  date?: string;
-}
+type PerformanceRow = PerformanceRecord;
 
 interface QuizOption {
   en: string;
@@ -78,6 +71,21 @@ interface LessonRow {
   isPublished: boolean;
   quiz?: { questions: QuizQuestion[] } | null;
   createdAt?: string;
+  category?: LessonCategory;
+}
+
+type ExamRow = ExamModel;
+
+interface ExamResultRow {
+  examId: string;
+  examTitle: string;
+  studentId: string;
+  studentName: string;
+  gradeLevel: string;
+  score: number;
+  totalMarks: number;
+  feedback: string;
+  updatedAt: string;
 }
 
 interface ToastItem {
@@ -102,7 +110,14 @@ const lessonTypes: { value: LessonType; en: string; ar: string }[] = [
   { value: 'video', en: 'Video', ar: 'فيديو' },
   { value: 'pdf', en: 'PDF', ar: 'ملف PDF' },
   { value: 'quiz_only', en: 'Quiz Only', ar: 'اختبار فقط' },
-  { value: 'hybrid', en: 'Hybrid (Video + PDF)', ar: 'مختلط (فيديو + PDF)' },
+  { value: 'hybrid', en: 'Hybrid', ar: 'هجين' },
+];
+
+const lessonCategories: { value: LessonCategory; en: string; ar: string }[] = [
+  { value: 'THEORY', en: 'Theory', ar: 'نظري' },
+  { value: 'PRACTICAL', en: 'Practical', ar: 'عملي' },
+  { value: 'HYBRID', en: 'Hybrid', ar: 'هجين' },
+  { value: 'ASSESSMENT', en: 'Assessment', ar: 'تقييم' },
 ];
 
 const emptyOption = (): QuizOption => ({ en: '', ar: '' });
@@ -116,14 +131,14 @@ const makeQuestion = (): QuizQuestion => ({
 
 export default function TeacherDashboard() {
   const { user, logout, loading } = useAuth();
-  const { language, setLanguage, dir } = useLanguage();
+  const { language, dir } = useLanguage();
   const router = useRouter();
   const isAr = language === 'ar';
 
   const [theme, setTheme] = useState<Theme>('light');
   const isDark = theme === 'dark';
 
-  const [checkingAccess, setCheckingAccess] = useState(true);
+  const checkingAccess = loading || !user || !isAdminEmail(user.email);
 
   // ===== Toasts =====
   const [toasts, setToasts] = useState<ToastItem[]>([]);
@@ -154,7 +169,7 @@ export default function TeacherDashboard() {
   const [loadingLessons, setLoadingLessons] = useState(true);
   const [togglingLessonId, setTogglingLessonId] = useState<string | null>(null);
 
-  const [activeSection, setActiveSection] = useState<'analytics' | 'students' | 'repository' | 'addLesson' | 'exams' | 'announcements'>('analytics');
+  const [activeSection, setActiveSection] = useState<ActiveSection>('analytics');
 
   // ===== Profile modal =====
   const [profileStudent, setProfileStudent] = useState<StudentRow | null>(null);
@@ -174,18 +189,20 @@ export default function TeacherDashboard() {
   const [duration, setDuration] = useState('');
   const [lessonOrder, setLessonOrder] = useState('');
   const [lessonType, setLessonType] = useState<LessonType>('video');
+  const [lessonCategory, setLessonCategory] = useState<LessonCategory>('THEORY');
   const [videoUrl, setVideoUrl] = useState('');
   const [pdfUrl, setPdfUrl] = useState('');
   const [lessonGrade, setLessonGrade] = useState('');
   const [isPublished, setIsPublished] = useState(false);
+  const [lessonActivities, setLessonActivities] = useState<Activity[]>([]);
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [submittingLesson, setSubmittingLesson] = useState(false);
   const [lessonFormError, setLessonFormError] = useState('');
 
   // ===== Exams & Grading =====
-  const [exams, setExams] = useState<any[]>([]);
+  const [exams, setExams] = useState<ExamRow[]>([]);
   const [loadingExams, setLoadingExams] = useState(true);
-  const [selectedExam, setSelectedExam] = useState<any>(null);
+  const [selectedExam, setSelectedExam] = useState<ExamRow | null>(null);
   const [examStudents, setExamStudents] = useState<StudentRow[]>([]);
   const [loadingExamStudents, setLoadingExamStudents] = useState(false);
   const [examGrades, setExamGrades] = useState<Record<string, { score: string; feedback: string }>>({});
@@ -212,11 +229,9 @@ export default function TeacherDashboard() {
   // ===== Admin gate =====
   useEffect(() => {
     if (loading) return;
-    if (!user || user.email !== ADMIN_EMAIL) {
+    if (!user || !isAdminEmail(user.email)) {
       router.push('/');
-      return;
     }
-    setCheckingAccess(false);
   }, [loading, user, router]);
 
   // ===== Fetch students =====
@@ -226,7 +241,7 @@ export default function TeacherDashboard() {
       const q = query(collection(db, 'users'), where('role', '==', 'student'));
       const snapshot = await getDocs(q);
       const fetched: StudentRow[] = snapshot.docs.map((d) => {
-        const data = d.data() as any;
+        const data = d.data() as Partial<StudentRow>;
         return {
           id: d.id,
           name: data.name || '—',
@@ -246,9 +261,9 @@ export default function TeacherDashboard() {
   }, [isAr, pushToast]);
 
   useEffect(() => {
-    if (!checkingAccess) fetchStudents();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkingAccess]);
+    if (checkingAccess) return;
+    queueMicrotask(() => { void fetchStudents(); });
+  }, [checkingAccess, fetchStudents]);
 
   // ===== Fetch performance for analytics =====
   useEffect(() => {
@@ -257,7 +272,7 @@ export default function TeacherDashboard() {
       try {
         const snapshot = await getDocs(collection(db, 'performance'));
         const fetched: PerformanceRow[] = snapshot.docs.map((d) => {
-          const data = d.data() as any;
+          const data = d.data() as Partial<PerformanceRow>;
           return {
             id: d.id,
             studentId: data.studentId || '',
@@ -284,7 +299,7 @@ export default function TeacherDashboard() {
     try {
       const snapshot = await getDocs(collection(db, 'lessons'));
       const fetched: LessonRow[] = snapshot.docs.map((d) => {
-        const data = d.data() as any;
+        const data = d.data() as Partial<LessonRow>;
         return {
           id: d.id,
           title_en: data.title_en || '',
@@ -298,6 +313,7 @@ export default function TeacherDashboard() {
           isPublished: Boolean(data.isPublished),
           quiz: data.quiz || null,
           createdAt: data.createdAt || '',
+          category: data.category,
         };
       });
       fetched.sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
@@ -311,19 +327,26 @@ export default function TeacherDashboard() {
   }, [isAr, pushToast]);
 
   useEffect(() => {
-    if (!checkingAccess) fetchLessons();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkingAccess]);
+    if (checkingAccess) return;
+    queueMicrotask(() => { void fetchLessons(); });
+  }, [checkingAccess, fetchLessons]);
 
   // ===== Fetch Exams =====
   const fetchExams = useCallback(async () => {
     setLoadingExams(true);
     try {
       const snapshot = await getDocs(collection(db, 'exams'));
-      const fetched = snapshot.docs.map((d) => ({
-        id: d.id,
-        ...d.data(),
-      }));
+      const fetched: ExamRow[] = snapshot.docs.map((d) => {
+        const data = d.data() as Partial<ExamRow>;
+        return {
+          id: d.id,
+          title: data.title || '',
+          gradeLevel: data.gradeLevel || '',
+          totalMarks: Number(data.totalMarks) || 0,
+          date: data.date || '',
+          createdAt: data.createdAt,
+        };
+      });
       setExams(fetched);
     } catch (error) {
       console.error('Error fetching exams:', error);
@@ -334,9 +357,9 @@ export default function TeacherDashboard() {
   }, [isAr, pushToast]);
 
   useEffect(() => {
-    if (!checkingAccess) fetchExams();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkingAccess]);
+    if (checkingAccess) return;
+    queueMicrotask(() => { void fetchExams(); });
+  }, [checkingAccess, fetchExams]);
 
   // ===== Fetch Announcements =====
   const fetchAnnouncements = useCallback(async () => {
@@ -350,7 +373,7 @@ export default function TeacherDashboard() {
           title: data.title || '',
           content: data.content || '',
           gradeLevel: data.gradeLevel || '',
-          author: data.author || 'Teacher Mariam 👑',
+          author: data.author || 'Teacher MASRIA',
           pinned: data.pinned || false,
           createdAt: data.createdAt || new Date().toISOString(),
         };
@@ -370,9 +393,9 @@ export default function TeacherDashboard() {
   }, [isAr, pushToast]);
 
   useEffect(() => {
-    if (!checkingAccess) fetchAnnouncements();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [checkingAccess]);
+    if (checkingAccess) return;
+    queueMicrotask(() => { void fetchAnnouncements(); });
+  }, [checkingAccess, fetchAnnouncements]);
 
   // ===== Exam & Grading Handlers =====
   const handleCreateExam = async (e: React.FormEvent) => {
@@ -405,7 +428,7 @@ export default function TeacherDashboard() {
     }
   };
 
-  const handleSelectExam = async (exam: any) => {
+  const handleSelectExam = async (exam: ExamRow) => {
     setSelectedExam(exam);
     setLoadingExamStudents(true);
     setExamGrades({});
@@ -431,8 +454,9 @@ export default function TeacherDashboard() {
       const gradesQ = query(collection(db, 'exam_results'), where('examId', '==', exam.id));
       const gradesSnapshot = await getDocs(gradesQ);
       const grades: Record<string, { score: string; feedback: string }> = {};
-      gradesSnapshot.docs.forEach((doc) => {
-        const data = doc.data();
+      gradesSnapshot.docs.forEach((resultDoc) => {
+        const data = resultDoc.data() as Partial<ExamResultRow>;
+        if (!data.studentId) return;
         grades[data.studentId] = {
           score: data.score?.toString() || '',
           feedback: data.feedback || '',
@@ -451,12 +475,13 @@ export default function TeacherDashboard() {
     if (!selectedExam) return;
     setSavingGrades(true);
     try {
-      const batch = writeBatch(db);
-      examStudents.forEach((student) => {
-        const grade = examGrades[student.id];
-        if (grade && grade.score !== '') {
-          const docRef = doc(collection(db, 'exam_results'));
-          batch.set(docRef, {
+      const updatedAt = new Date().toISOString();
+      await Promise.all(
+        examStudents.map(async (student) => {
+          const grade = examGrades[student.id];
+          if (!grade || grade.score === '') return;
+
+          const result: ExamResultRow = {
             examId: selectedExam.id,
             examTitle: selectedExam.title,
             studentId: student.id,
@@ -465,11 +490,12 @@ export default function TeacherDashboard() {
             score: Number(grade.score),
             totalMarks: selectedExam.totalMarks,
             feedback: grade.feedback || '',
-            updatedAt: new Date().toISOString(),
-          });
-        }
-      });
-      await batch.commit();
+            updatedAt,
+          };
+          const resultId = `${selectedExam.id}_${student.id}`;
+          await setDoc(doc(db, 'exam_results', resultId), result, { merge: true });
+        })
+      );
       pushToast('success', isAr ? 'تم حفظ الدرجات بنجاح' : 'Grades saved successfully');
     } catch (error) {
       console.error('Error saving grades:', error);
@@ -479,7 +505,7 @@ export default function TeacherDashboard() {
     }
   };
 
-  const handleDeleteExam = (exam: any) => {
+  const handleDeleteExam = (exam: ExamRow) => {
     setConfirmState({
       title: isAr ? 'حذف الاختبار' : 'Delete Exam',
       body: isAr
@@ -487,13 +513,12 @@ export default function TeacherDashboard() {
         : `This will delete "${exam.title}" and all associated grades.`,
       onConfirm: async () => {
         try {
-          await deleteDoc(doc(db, 'exams', exam.id));
-          // Also delete associated exam results
           const q = query(collection(db, 'exam_results'), where('examId', '==', exam.id));
           const snapshot = await getDocs(q);
-          snapshot.docs.forEach(async (doc) => {
-            await deleteDoc(doc.ref);
-          });
+          await Promise.all([
+            deleteDoc(doc(db, 'exams', exam.id)),
+            ...snapshot.docs.map((resultDoc) => deleteDoc(resultDoc.ref)),
+          ]);
           setExams((prev) => prev.filter((e) => e.id !== exam.id));
           if (selectedExam?.id === exam.id) {
             setSelectedExam(null);
@@ -525,7 +550,7 @@ export default function TeacherDashboard() {
         title: announcementTitle.trim(),
         content: announcementContent.trim(),
         gradeLevel: announcementGrade,
-        author: 'Teacher Mariam 👑',
+        author: 'Teacher MASRIA',
         pinned: announcementPinned,
         createdAt: new Date().toISOString(),
       });
@@ -543,7 +568,7 @@ export default function TeacherDashboard() {
     }
   };
 
-  const handleDeleteAnnouncement = (announcement: any) => {
+  const handleDeleteAnnouncement = (announcement: Announcement) => {
     setConfirmState({
       title: isAr ? 'حذف الإعلان' : 'Delete Announcement',
       body: isAr
@@ -695,7 +720,7 @@ export default function TeacherDashboard() {
       const q = query(collection(db, 'performance'), where('studentId', '==', student.id));
       const snapshot = await getDocs(q);
       const fetched: PerformanceRow[] = snapshot.docs.map((d) => {
-        const data = d.data() as any;
+        const data = d.data() as Partial<PerformanceRow>;
         return {
           id: d.id,
           studentId: data.studentId || '',
@@ -772,6 +797,7 @@ export default function TeacherDashboard() {
     setPdfUrl('');
     setLessonGrade('');
     setIsPublished(false);
+    setLessonActivities([]);
     setQuizQuestions([]);
   };
 
@@ -817,6 +843,12 @@ export default function TeacherDashboard() {
       return;
     }
 
+    const activityErrors = validateActivityList(lessonActivities);
+    if (activityErrors.length > 0) {
+      setLessonFormError(activityErrors.join('\n'));
+      return;
+    }
+
     setSubmittingLesson(true);
     try {
       await addDoc(collection(db, 'lessons'), {
@@ -824,61 +856,48 @@ export default function TeacherDashboard() {
         title_ar: titleAr.trim(),
         duration: duration.trim(),
         type: lessonType,
+        category: lessonCategory,
         gradeLevel: lessonGrade,
         order: lessonOrder ? Number(lessonOrder) : null,
-        videoUrl: videoUrl.trim() || null, // FIX: Send null instead of undefined
-        pdfUrl: pdfUrl.trim() || null,     // FIX: Send null instead of undefined
+        videoUrl: videoUrl.trim() || null,
+        pdfUrl: pdfUrl.trim() || null,
         isPublished,
         quiz: quizQuestions.length
-          ? { questions: quizQuestions.map(({ uid, ...rest }) => rest) }
-          : null,                          // FIX: Send null instead of undefined
+          ? { questions: quizQuestions.map((question) => ({
+              en: question.en,
+              ar: question.ar,
+              options: question.options,
+              correct: question.correct,
+            })) }
+          : null,
+        activities: lessonActivities.length ? lessonActivities : [],
         createdAt: new Date().toISOString(),
       });
       pushToast('success', isAr ? 'تمت إضافة الدرس بنجاح!' : 'Lesson added successfully!');
       resetLessonForm();
       fetchLessons();
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error adding lesson:', error);
       setLessonFormError(
         isAr
-          ? `حدث خطأ أثناء إضافة الدرس: ${error?.message || 'حاول مرة أخرى.'}`
-          : `Something went wrong adding the lesson: ${error?.message || 'Please try again.'}`
+          ? `حدث خطأ أثناء إضافة الدرس: ${getErrorMessage(error, 'حاول مرة أخرى.')}`
+          : `Something went wrong adding the lesson: ${getErrorMessage(error, 'Please try again.')}`
       );
     } finally {
       setSubmittingLesson(false);
     }
   };
 
-  // ===== Inline "Orbit Ring" brand mark =====
-  const OrbitMark = ({ size = 40 }: { size?: number }) => (
-    <svg width={size} height={size} viewBox="0 0 56 56" fill="none">
-      <g className="orbit-ring">
-        <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#C9A876" strokeWidth="1.6" transform="rotate(0 28 28)" fill="none" />
-        <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#8C3B3F" strokeWidth="1.6" transform="rotate(60 28 28)" fill="none" />
-        <ellipse cx="28" cy="28" rx="24" ry="9" stroke="#5C1A24" strokeWidth="1.6" transform="rotate(120 28 28)" fill="none" />
-      </g>
-      <circle cx="28" cy="28" r="6.5" fill="url(#adminNucleusGlow)" />
-      <defs>
-        <radialGradient id="adminNucleusGlow" cx="0.35" cy="0.3" r="0.9">
-          <stop offset="0%" stopColor="#E7827E" />
-          <stop offset="100%" stopColor="#5C1A24" />
-        </radialGradient>
-      </defs>
-    </svg>
-  );
-
-  const pageBg = isDark ? 'bg-[#1A0609]' : 'bg-[#F8F1E7]';
-  const navBg = isDark ? 'bg-black/40 border-[#C9A876]/15' : 'bg-white/70 border-[#C9A876]/25';
-  const cardBg = isDark ? 'bg-black/30 border-[#C9A876]/15' : 'bg-white/75 border-[#C9A876]/25';
-  const cardShadow = isDark ? 'shadow-xl shadow-black/40' : 'shadow-xl shadow-[#5C1A24]/5';
-  const headingText = isDark ? 'text-[#F8F1E7]' : 'text-[#2E1013]';
-  const bodyText = isDark ? 'text-[#E7C3B6]/80' : 'text-[#5C1A24]/70';
-  const mutedText = isDark ? 'text-[#E7C3B6]/50' : 'text-[#5C1A24]/50';
-  const inputBg = isDark
-    ? 'bg-black/30 border-[#C9A876]/20 text-[#F8F1E7] placeholder-[#E7C3B6]/30'
-    : 'bg-white/70 border-[#C9A876]/30 text-[#2E1013] placeholder-[#5C1A24]/30';
-  const ambientA = isDark ? 'bg-[#8C3B3F]/15' : 'bg-[#C9A876]/15';
-  const ambientB = isDark ? 'bg-[#C9A876]/10' : 'bg-[#8C3B3F]/10';
+  const pageBg = 'bg-[#080c14]';
+  const navBg = 'bg-slate-950/70 border-white/10';
+  const cardBg = 'bg-slate-900/60 border-white/10';
+  const cardShadow = 'shadow-[0_24px_80px_rgba(2,6,23,0.5)]';
+  const headingText = 'text-white';
+  const bodyText = 'text-slate-300';
+  const mutedText = 'text-slate-400';
+  const inputBg = 'bg-slate-950/80 border-white/10 text-slate-100 placeholder:text-slate-500';
+  const ambientA = 'bg-cyan-500/10';
+  const ambientB = 'bg-indigo-500/10';
 
   if (loading || checkingAccess) {
     return (
@@ -927,76 +946,34 @@ export default function TeacherDashboard() {
         ))}
       </div>
 
-      {/* Nav */}
-      <nav className={`relative z-10 backdrop-blur-xl border-b ${navBg}`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-20 gap-4">
-            <div className="flex items-center gap-3">
-              <OrbitMark />
-              <div>
-                <h1 className="font-display text-xl sm:text-2xl font-bold bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] bg-clip-text text-transparent leading-tight" dir="ltr">
-                  Nucleus
-                </h1>
-                <span className={`text-[11px] tracking-wide block leading-tight ${mutedText}`}>
-                  {isAr ? 'لوحة تحكم المعلم' : 'Teacher / Admin Dashboard'}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 sm:gap-3">
-              <button
-                onClick={() => setTheme(isDark ? 'light' : 'dark')}
-                className={`w-10 h-10 flex items-center justify-center rounded-full border transition-all duration-300 ${
-                  isDark
-                    ? 'bg-[#C9A876]/10 border-[#C9A876]/30 text-[#C9A876] hover:bg-[#C9A876]/20'
-                    : 'bg-[#5C1A24]/5 border-[#C9A876]/30 text-[#5C1A24] hover:bg-[#C9A876]/15'
-                }`}
-              >
-                {isDark ? (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
-                )}
-              </button>
-              <button
-                onClick={() => setLanguage(language === 'en' ? 'ar' : 'en')}
-                className={`px-3 py-2 rounded-full text-xs sm:text-sm font-medium border transition-all duration-300 ${
-                  isDark
-                    ? 'bg-[#C9A876]/10 border-[#C9A876]/25 text-[#F8F1E7] hover:bg-[#C9A876]/20'
-                    : 'bg-[#5C1A24]/5 border-[#C9A876]/30 text-[#5C1A24] hover:bg-[#C9A876]/15'
-                }`}
-              >
-                {language === 'en' ? 'العربية' : 'English'}
-              </button>
-              <button
-                onClick={handleLogout}
-                className="px-4 py-2 bg-[#8C3B3F]/10 text-[#8C3B3F] border border-[#8C3B3F]/30 rounded-full font-medium hover:bg-[#8C3B3F]/20 hover:border-[#8C3B3F]/50 transition-all duration-300 text-sm"
-              >
-                {isAr ? 'تسجيل الخروج' : 'Logout'}
-              </button>
-            </div>
-          </div>
-        </div>
-      </nav>
+      <DashboardNavbar
+        theme={theme}
+        onThemeToggle={() => setTheme(isDark ? 'light' : 'dark')}
+        onLogout={handleLogout}
+        adminBadge="Admin Portal"
+        navClassName={navBg}
+        themeButtonClassName="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-slate-900/60 text-slate-200 transition hover:border-cyan-400/40 hover:text-white"
+      />
 
       <main className="relative z-10 max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-6 sm:py-10">
         {/* Section switcher (Responsive Grid on Mobile) */}
-        <div className={`backdrop-blur-xl rounded-[2rem] border mb-8 overflow-hidden ${cardBg} ${cardShadow}`}>
-          <div className="grid grid-cols-2 sm:flex sm:flex-row gap-2 p-2">
+        <div className={`mb-8 overflow-hidden rounded-[2rem] border border-white/10 bg-slate-900/60 backdrop-blur-xl ${cardShadow}`}>
+          <div className="grid grid-cols-2 gap-2 p-2 sm:flex sm:flex-row">
             {([
-              { key: 'analytics', en: 'Analytics', ar: 'الإحصائيات' },
-              { key: 'students', en: 'Students', ar: 'الطلاب' },
-              { key: 'repository', en: 'Repository', ar: 'المستودع' },
-              { key: 'addLesson', en: 'Add Lesson', ar: 'إضافة درس' },
-              { key: 'exams', en: 'Exams & Grading', ar: 'الاختبارات والتقييم' },
-              { key: 'announcements', en: 'Announcements', ar: 'الإعلانات' },
+              { key: 'analytics', en: 'System Metrics', ar: 'مقاييس النظام' },
+              { key: 'students', en: 'Student Review', ar: 'مراجعة الطلاب' },
+              { key: 'repository', en: 'Module Library', ar: 'مكتبة الوحدات' },
+              { key: 'addLesson', en: 'Create Module', ar: 'إنشاء وحدة' },
+              { key: 'exams', en: 'Assessment Pipeline', ar: 'مسار التقييم' },
+              { key: 'announcements', en: 'Release Notes', ar: 'ملاحظات الإصدار' },
             ] as const).map((tab) => (
               <button
                 key={tab.key}
-                onClick={() => setActiveSection(tab.key as any)}
-                className={`flex-1 px-3 sm:px-5 py-3 rounded-2xl font-semibold text-xs sm:text-sm transition-all duration-300 ${
+                onClick={() => setActiveSection(tab.key)}
+                className={`flex-1 rounded-2xl px-3 py-3 text-xs font-semibold transition-all duration-300 sm:px-5 sm:text-sm ${
                   activeSection === tab.key
-                    ? 'bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] text-white shadow-lg shadow-[#5C1A24]/25'
-                    : `${bodyText} hover:${headingText} hover:bg-[#C9A876]/[0.08]`
+                    ? 'bg-gradient-to-r from-cyan-500 to-indigo-500 text-white shadow-lg shadow-cyan-500/15'
+                    : 'text-slate-300 hover:bg-white/5 hover:text-white'
                 }`}
               >
                 {isAr ? tab.ar : tab.en}
@@ -1044,8 +1021,8 @@ export default function TeacherDashboard() {
         {activeSection === 'students' && (
           <div className={`backdrop-blur-xl rounded-[2rem] border overflow-hidden ${cardBg} ${cardShadow}`}>
             <div className="p-5 sm:p-8 pb-4">
-              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'إدارة الطلاب' : 'Student Management'}</h3>
-              <p className={`text-xs mb-5 ${mutedText}`}>{isAr ? 'راجع، وافق، أوقف، أو احذف حسابات الطلاب' : 'Review, approve, suspend, or remove student accounts'}</p>
+              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'مراجعة الطلاب' : 'Student Review Pipeline'}</h3>
+              <p className={`text-xs mb-5 ${mutedText}`}>{isAr ? 'مراجعة الحسابات، الموافقة، والإيقاف المؤقت للطلاب' : 'Review accounts, approve access, and manage student status'}</p>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <input type="text" value={studentSearch} onChange={(e) => setStudentSearch(e.target.value)} placeholder={isAr ? 'ابحث بالاسم أو البريد الإلكتروني' : 'Search name or email'} className={`w-full px-4 py-2.5 rounded-xl border outline-none focus:border-[#8C3B3F]/60 text-sm ${inputBg}`} />
                 <select value={studentGradeFilter} onChange={(e) => setStudentGradeFilter(e.target.value)} className={`w-full px-4 py-2.5 rounded-xl border outline-none text-sm appearance-none cursor-pointer ${inputBg}`}>
@@ -1108,8 +1085,8 @@ export default function TeacherDashboard() {
         {activeSection === 'repository' && (
           <div className={`backdrop-blur-xl rounded-[2rem] border overflow-hidden ${cardBg} ${cardShadow}`}>
             <div className="p-5 sm:p-8 pb-4">
-              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'مستودع الدروس' : 'Lesson Repository'}</h3>
-              <p className={`text-xs ${mutedText}`}>{isAr ? 'كل الدروس المخزنة، مع إمكانية النشر أو الحذف' : 'Every stored lesson, with publish and delete controls'}</p>
+              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'مكتبة الوحدات التعليمية' : 'Course Module Library'}</h3>
+              <p className={`text-xs ${mutedText}`}>{isAr ? 'جميع الوحدات الدراسية، مع التحكم في النشر والإدارة' : 'All course modules with publishing and maintenance controls'}</p>
             </div>
             {loadingLessons ? (
               <div className="px-5 sm:px-8 pb-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{[0, 1, 2].map((i) => (<div key={i} className={`h-32 rounded-2xl animate-pulse ${isDark ? 'bg-white/5' : 'bg-[#5C1A24]/5'}`} />))}</div>
@@ -1140,8 +1117,8 @@ export default function TeacherDashboard() {
         {/* ===== ADD LESSON SECTION (RESPONSIVE FIX) ===== */}
         {activeSection === 'addLesson' && (
           <div className={`backdrop-blur-xl rounded-[2rem] p-5 sm:p-8 border ${cardBg} ${cardShadow}`}>
-            <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'إضافة درس جديد' : 'Add a New Lesson'}</h3>
-            <p className={`text-xs mb-6 ${mutedText}`}>{isAr ? 'يتم حفظ الدرس مباشرة في قاعدة بيانات الدروس' : 'This saves directly into the lessons collection'}</p>
+            <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'إنشاء وحدة تعليمية جديدة' : 'Create a New Learning Module'}</h3>
+            <p className={`text-xs mb-6 ${mutedText}`}>{isAr ? 'يتم حفظ الوحدة مباشرة في مستودع المحتوى التعليمي' : 'This saves directly into the learning content repository'}</p>
 
             <form onSubmit={handleAddLesson} className="space-y-6">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
@@ -1168,6 +1145,12 @@ export default function TeacherDashboard() {
                   <label className={`block text-xs font-semibold mb-1.5 ${bodyText}`}>{isAr ? 'نوع الدرس' : 'Lesson Type'}</label>
                   <select value={lessonType} onChange={(e) => setLessonType(e.target.value as LessonType)} className={`w-full px-4 py-2.5 sm:py-3 rounded-xl sm:rounded-2xl border text-sm appearance-none cursor-pointer ${inputBg}`}>
                     {lessonTypes.map((lt) => (<option key={lt.value} value={lt.value} className={isDark ? 'bg-[#2A0D12]' : 'bg-white'}>{isAr ? lt.ar : lt.en}</option>))}
+                  </select>
+                </div>
+                <div>
+                  <label className={`block text-xs font-semibold mb-1.5 ${bodyText}`}>{isAr ? 'فئة الدرس' : 'Lesson Category'}</label>
+                  <select value={lessonCategory} onChange={(e) => setLessonCategory(e.target.value as LessonCategory)} className={`w-full px-4 py-2.5 sm:py-3 rounded-xl sm:rounded-2xl border text-sm appearance-none cursor-pointer ${inputBg}`}>
+                    {lessonCategories.map((lc) => (<option key={lc.value} value={lc.value} className={isDark ? 'bg-[#2A0D12]' : 'bg-white'}>{isAr ? lc.ar : lc.en}</option>))}
                   </select>
                 </div>
                 <div>
@@ -1201,7 +1184,13 @@ export default function TeacherDashboard() {
                 </button>
               </div>
 
-              {/* ===== Visual Quiz Builder (MOBILE RESPONSIVE FIX) ===== */}
+              <ActivityBuilder
+                activities={lessonActivities}
+                onChange={setLessonActivities}
+                isDark={isDark}
+                isAr={isAr}
+              />
+
               <div className={`rounded-xl sm:rounded-2xl border p-4 sm:p-6 ${isDark ? 'bg-black/20 border-[#C9A876]/15' : 'bg-white/50 border-[#C9A876]/20'}`}>
                 <div className="flex items-center justify-between mb-1">
                   <h4 className={`font-display text-base sm:text-lg font-bold ${headingText}`}>{isAr ? 'باني الاختبار التفاعلي' : 'Interactive Quiz Builder'}</h4>
@@ -1225,7 +1214,6 @@ export default function TeacherDashboard() {
                           <input type="text" value={q.ar} onChange={(e) => updateQuizQuestion(q.uid, 'ar', e.target.value)} placeholder={isAr ? 'نص السؤال (عربي)' : 'Question text (AR)'} dir="rtl" className={`w-full px-3.5 py-2.5 rounded-xl border text-xs sm:text-sm ${inputBg}`} />
                         </div>
 
-                        {/* Options: Stack vertically on phone, side-by-side on desktop */}
                         <div className="space-y-2.5">
                           {q.options.map((opt, optIndex) => (
                             <div key={optIndex} className={`flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 p-3 sm:p-2 rounded-xl border ${isDark ? 'bg-black/30 border-[#C9A876]/10' : 'bg-white/80 border-[#C9A876]/15'}`}>
@@ -1247,7 +1235,7 @@ export default function TeacherDashboard() {
                 )}
               </div>
 
-              {lessonFormError && <div className="p-3 bg-rose-500/10 border border-rose-400/30 rounded-xl text-rose-600 text-xs sm:text-sm">{lessonFormError}</div>}
+              {lessonFormError && <div className="p-3 bg-rose-500/10 border border-rose-400/30 rounded-xl text-rose-600 text-xs sm:text-sm whitespace-pre-line">{lessonFormError}</div>}
 
               <button type="submit" disabled={submittingLesson} className="w-full sm:w-auto px-8 py-3.5 rounded-xl sm:rounded-2xl bg-gradient-to-r from-[#5C1A24] via-[#8C3B3F] to-[#C9A876] text-white font-semibold text-sm sm:text-base hover:brightness-110 disabled:opacity-50">
                 {submittingLesson ? (isAr ? 'جارٍ الحفظ...' : 'Saving...') : (isAr ? 'حفظ الدرس' : 'Save Lesson')}
@@ -1261,8 +1249,8 @@ export default function TeacherDashboard() {
           <div className="space-y-6">
             {/* Create Exam Form */}
             <div className={`backdrop-blur-xl rounded-[2rem] p-5 sm:p-8 border ${cardBg} ${cardShadow}`}>
-              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'إنشاء اختبار جديد' : 'Create New Exam'}</h3>
-              <p className={`text-xs mb-6 ${mutedText}`}>{isAr ? 'إنشاء اختبار ورقي لتقييم الطلاب' : 'Create an offline exam for student grading'}</p>
+              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'إنشاء تقييم جديد' : 'Create New Assessment'}</h3>
+              <p className={`text-xs mb-6 ${mutedText}`}>{isAr ? 'إنشاء اختبار منظم لتقييم أداء الطلاب' : 'Create a structured assessment for student evaluation'}</p>
 
               <form onSubmit={handleCreateExam} className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -1324,8 +1312,8 @@ export default function TeacherDashboard() {
             {/* Exam List & Grading */}
             <div className={`backdrop-blur-xl rounded-[2rem] border overflow-hidden ${cardBg} ${cardShadow}`}>
               <div className="p-5 sm:p-8 pb-4">
-                <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'الاختبارات وتقييم الطلاب' : 'Exams & Student Grading'}</h3>
-                <p className={`text-xs ${mutedText}`}>{isAr ? 'اختر اختباراً لتقييم الطلاب' : 'Select an exam to grade students'}</p>
+                <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'مسار التقييم والدرجات' : 'Assessment & Grade Tracking'}</h3>
+                <p className={`text-xs ${mutedText}`}>{isAr ? 'اختر تقييمًا لمراجعة أداء الطلاب' : 'Select a test to review student performance'}</p>
               </div>
 
               {loadingExams ? (
@@ -1444,8 +1432,8 @@ export default function TeacherDashboard() {
           <div className="space-y-6">
             {/* Create Announcement Form */}
             <div className={`backdrop-blur-xl rounded-[2rem] p-5 sm:p-8 border ${cardBg} ${cardShadow}`}>
-              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'إنشاء إعلان جديد' : 'Create New Announcement'}</h3>
-              <p className={`text-xs mb-6 ${mutedText}`}>{isAr ? 'نشر إعلان للطلاب وأولياء الأمور' : 'Post announcements for students and parents'}</p>
+              <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'إنشاء ملاحظة جديدة' : 'Create New Release Note'}</h3>
+              <p className={`text-xs mb-6 ${mutedText}`}>{isAr ? 'نشر تحديثات وإعلانات للطلاب وأولياء الأمور' : 'Share updates and announcements for students and families'}</p>
 
               <form onSubmit={handleCreateAnnouncement} className="space-y-4">
                 <div>
@@ -1510,8 +1498,8 @@ export default function TeacherDashboard() {
             {/* Announcements List */}
             <div className={`backdrop-blur-xl rounded-[2rem] border overflow-hidden ${cardBg} ${cardShadow}`}>
               <div className="p-5 sm:p-8 pb-4">
-                <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'الإعلانات المنشورة' : 'Published Announcements'}</h3>
-                <p className={`text-xs ${mutedText}`}>{isAr ? 'جميع الإعلانات النشطة' : 'All active announcements'}</p>
+                <h3 className={`font-display text-xl sm:text-2xl font-bold mb-1 ${headingText}`}>{isAr ? 'الإعلانات النشطة' : 'Published Release Notes'}</h3>
+                <p className={`text-xs ${mutedText}`}>{isAr ? 'جميع التحديثات والإعلانات النشطة' : 'All active updates and announcements'}</p>
               </div>
 
               {loadingAnnouncements ? (
@@ -1597,24 +1585,32 @@ export default function TeacherDashboard() {
       )}
 
       {/* ===== Confirm Modal ===== */}
-      {confirmState && (
-        <div className="fixed inset-0 z-[95] flex items-center justify-center p-4 sm:p-6">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => setConfirmState(null)} />
-          <div className={`relative w-full max-w-sm rounded-[1.75rem] border p-6 ${isDark ? 'bg-[#1A0609] border-[#C9A876]/20' : 'bg-[#F8F1E7] border-[#C9A876]/25'} ${cardShadow}`}>
-            <h3 className={`font-display text-lg font-bold mb-2 ${headingText}`}>{confirmState.title}</h3>
-            <p className={`text-sm mb-6 ${bodyText}`}>{confirmState.body}</p>
-            <div className="flex gap-3">
-              <button onClick={() => setConfirmState(null)} className={`flex-1 px-4 py-2.5 rounded-xl border text-sm font-semibold ${isDark ? 'border-[#C9A876]/25 text-[#E7C3B6]' : 'border-[#5C1A24]/20 text-[#5C1A24]'}`}>{isAr ? 'إلغاء' : 'Cancel'}</button>
-              <button onClick={confirmState.onConfirm} className="flex-1 px-4 py-2.5 rounded-xl bg-rose-500 text-white text-sm font-semibold hover:bg-rose-600">{isAr ? 'تأكيد الحذف' : 'Confirm Delete'}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmModal
+        open={confirmState !== null}
+        title={confirmState?.title || ''}
+        body={confirmState?.body || ''}
+        confirmLabel={isAr ? 'تأكيد الحذف' : 'Confirm Delete'}
+        cancelLabel={isAr ? 'إلغاء' : 'Cancel'}
+        onConfirm={confirmState?.onConfirm || (() => undefined)}
+        onCancel={() => setConfirmState(null)}
+        isDark={isDark}
+      />
     </div>
   );
 }
 
-function StatCard({ cardBg, cardShadow, headingText, mutedText, accent, title, subtitle, value }: any) {
+interface StatCardProps {
+  cardBg: string;
+  cardShadow: string;
+  headingText: string;
+  mutedText: string;
+  accent: string;
+  title: string;
+  subtitle: string;
+  value: string;
+}
+
+function StatCard({ cardBg, cardShadow, headingText, mutedText, accent, title, subtitle, value }: StatCardProps) {
   return (
     <div className={`backdrop-blur-xl rounded-2xl p-5 sm:p-6 border ${cardBg} ${cardShadow}`}>
       <h4 className={`text-sm sm:text-base font-semibold mb-1 ${accent}`}>{title}</h4>

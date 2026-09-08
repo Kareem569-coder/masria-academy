@@ -14,42 +14,45 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-export const metadata = {
-  title: "Nucleus Platform | منصة الإدارة والتعليم الذكي",
-  description: "منصة متكاملة لإدارة المنظومة التعليمية، تربط بين المعلم، الطالب، وولي الأمر في بيئة تفاعلية ذكية وسريعة.",
-  keywords: ["Nucleus", "Nucleus Platform", "منصة تعليمية", "إدارة المدارس", "نظام تعليمي"],
-  
-  // الإعدادات دي مسؤولة عن شكل الرابط على فيسبوك وواتساب ولينكدإن
+export const metadata: Metadata = {
+  metadataBase: new URL('https://masria-academy.vercel.app'),
+  title: 'MASRIA Academy | Eng. Kareem Ezzeldin',
+  description: 'MASRIA Academy for software engineering, programming, algorithms, systems, and practical product development by Eng. Kareem Ezzeldin.',
+  keywords: ['MASRIA', 'Software Academy', 'Kareem Ezzeldin', 'Programming', 'Algorithms', 'System Design', 'Full Stack'],
+  icons: {
+    icon: '/icon-192x192.png',
+    shortcut: '/icon-192x192.png',
+    apple: '/icon-192x192.png',
+  },
   openGraph: {
-    title: "Nucleus Platform | منصة الإدارة والتعليم الذكي",
-    description: "منصة متكاملة لإدارة المنظومة التعليمية، تربط بين المعلم، الطالب، وولي الأمر.",
-    url: "https://nucleus-platform-delta.vercel.app",
-    siteName: "Nucleus Platform",
+    title: 'MASRIA Academy | Eng. Kareem Ezzeldin',
+    description: 'Software engineering academy for practical learning in programming, systems, and modern development.',
+    url: 'https://masria-academy.vercel.app',
+    siteName: 'MASRIA Academy',
     images: [
       {
-        url: "/teacher-mobile.png", // ده مسار الصورة اللي حطيناها في فولدر public
+        url: '/teacher-mobile.png',
         width: 1200,
         height: 630,
-        alt: "Nucleus Platform Preview",
+        alt: 'MASRIA Academy Preview',
       },
     ],
-    locale: "ar_EG",
-    type: "website",
+    locale: 'ar_EG',
+    type: 'website',
   },
-
-  // الإعدادات دي مسؤولة عن شكل الرابط لو اتبعت على تويتر (X)
   twitter: {
-    card: "summary_large_image",
-    title: "Nucleus Platform | منصة الإدارة والتعليم الذكي",
-    description: "منصة متكاملة لإدارة المنظومة التعليمية، تربط بين المعلم، الطالب، وولي الأمر.",
-    images: ["/teacher-mobile.png"],
+    card: 'summary_large_image',
+    title: 'MASRIA Academy | Eng. Kareem Ezzeldin',
+    description: 'Software engineering academy for practical learning in programming, systems, and modern development.',
+    images: ['/teacher-mobile.png'],
   },
 };
+
 export const viewport = {
-  themeColor: '#000000', // تقدر تغير الكود الأسود ده للون الأساسي بتاع المنصة بتاعتك
+  themeColor: '#06b6d4',
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1, // بيمنع الزوم الغلط على الموبايل عشان يفضل شكل التطبيق مظبوط
+  maximumScale: 1,
 };
 
 export default function RootLayout({

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  execution-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      - PORT=8787
+      - EXECUTION_SERVICE_TOKEN=${EXECUTION_SERVICE_TOKEN:-dev-token-change-in-production}
+    volumes:
+      # Mount Docker socket for job execution (service only, not exposed to jobs)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - masria-network
+    restart: unless-stopped
+
+networks:
+  masria-network:
+    driver: bridge

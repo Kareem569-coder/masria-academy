@@ -2,13 +2,13 @@ import { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Nucleus Platform',
-    short_name: 'Nucleus',
-    description: 'منصة متكاملة لإدارة المنظومة التعليمية',
+    name: 'MASRIA',
+    short_name: 'MASRIA',
+    description: 'MASRIA Academy for software engineering and programming education.',
     start_url: '/',
-    display: 'standalone', // الكلمة دي هي اللي بتخفي شريط المتصفح وتخليه تطبيق شاشة كاملة
-    background_color: '#ffffff', // لون خلفية التطبيق وهو بيحمل
-    theme_color: '#000000', // لون شريط الإشعارات والبطارية فوق
+    display: 'standalone',
+    background_color: '#080c14',
+    theme_color: '#06b6d4',
     icons: [
       {
         src: '/icon-192x192.png',

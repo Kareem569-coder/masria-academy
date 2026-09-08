@@ -13,6 +13,6 @@ export default function robots(): MetadataRoute.Robots {
         '/api/',
       ],
     },
-    sitemap: 'https://nucleus-platform-delta.vercel.app/sitemap.xml',
+    sitemap: 'https://masria-academy.vercel.app/sitemap.xml',
   };
 }
