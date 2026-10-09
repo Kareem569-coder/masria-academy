@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { connectFirestoreEmulator, doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { createLesson, deleteLesson, updateLesson } from '@/lib/firestore/lessonService';
+import { addLessonsToPackage, createLesson, deleteLesson, getLessonById, removeLessonFromPackage, updateLesson } from '@/lib/firestore/lessonService';
 import {
   createCoursePackage,
   getCoursePackageById,
@@ -731,6 +731,91 @@ packageServiceDescribe('Package Service', () => {
   });
 
   describe('Lesson Access Control', () => {
+    it('reuses an existing draft across packages, deduplicates assignment, and removes only one reference', async () => {
+      const packageOne = await createCoursePackage({
+        name: 'Shared lesson package one', gradeLevel: 'Grade 4', isActive: true, createdBy: 'test-teacher',
+      });
+      const packageTwo = await createCoursePackage({
+        name: 'Shared lesson package two', gradeLevel: 'Grade 4', isActive: true, createdBy: 'test-teacher',
+      });
+      const lessonId = await createLesson({
+        title_en: 'Reusable draft', title_ar: 'Reusable draft', type: 'video', duration: '10 min',
+        gradeLevel: 'Grade 4', isPublished: false, packageId: packageOne,
+      });
+
+      await Promise.all([
+        addLessonsToPackage(packageTwo, [lessonId, lessonId]),
+        addLessonsToPackage(packageTwo, [lessonId]),
+      ]);
+      await addLessonsToPackage(packageTwo, [lessonId]);
+
+      let lesson = await getLessonById(lessonId);
+      expect(lesson?.isPublished).toBe(false);
+      expect(lesson?.packageIds?.sort()).toEqual([packageOne, packageTwo].sort());
+      expect((await getDoc(doc(db, 'coursePackages', packageTwo))).data()?.lessonIds).toEqual([lessonId]);
+
+      await removeLessonFromPackage(packageOne, lessonId);
+      lesson = await getLessonById(lessonId);
+      expect(lesson?.id).toBe(lessonId);
+      expect(lesson?.packageIds).toEqual([packageTwo]);
+      expect((await getDoc(doc(db, 'coursePackages', packageOne))).data()?.lessonIds).toEqual([]);
+      expect((await getDoc(doc(db, 'coursePackages', packageTwo))).data()?.lessonIds).toEqual([lessonId]);
+
+      await updateLesson(lessonId, { title_en: 'Edited reusable lesson', isPublished: true });
+      lesson = await getLessonById(lessonId);
+      expect(lesson?.title_en).toBe('Edited reusable lesson');
+      expect(lesson?.packageIds).toEqual([packageTwo]);
+      expect(lesson?.isPublished).toBe(true);
+    });
+
+    it('removes a lesson final package membership without deleting it or retaining access', async () => {
+      const packageId = await createCoursePackage({
+        name: 'Final membership package', gradeLevel: 'Grade 4', isActive: true, createdBy: 'test-teacher',
+      });
+      const code = await generatePackageAccessCode(packageId);
+      expect((await redeemPackageAccessCode(code.code, 'test-student-uid', 'Grade 4')).success).toBe(true);
+      const lessonId = await createLesson({
+        title_en: 'Published lesson to detach', title_ar: 'Published lesson to detach', type: 'video', duration: '10 min',
+        gradeLevel: 'Grade 4', isPublished: true, packageId,
+      });
+
+      const lessonBeforeRemoval = await getLessonById(lessonId);
+      expect(lessonBeforeRemoval).not.toBeNull();
+      expect(await hasLessonAccess('test-student-uid', lessonBeforeRemoval!)).toBe(true);
+
+      await removeLessonFromPackage(packageId, lessonId);
+
+      const lessonAfterRemoval = await getLessonById(lessonId);
+      expect(lessonAfterRemoval?.id).toBe(lessonId);
+      expect(lessonAfterRemoval?.isPublished).toBe(true);
+      expect(lessonAfterRemoval?.packageId).toBe(packageId);
+      expect(lessonAfterRemoval?.packageIds).toEqual([]);
+      expect((await getCoursePackageById(packageId))?.lessonIds).toEqual([]);
+      expect(lessonAfterRemoval && await hasLessonAccess('test-student-uid', lessonAfterRemoval)).toBe(false);
+      expect((await getAccessibleLessonsForStudent('test-student-uid', 'Grade 4'))
+        .some((lesson) => lesson.id === lessonId)).toBe(false);
+    });
+
+    it('allows the same package removal to be repeated safely', async () => {
+      const packageId = await createCoursePackage({
+        name: 'Repeated removal package', gradeLevel: 'Grade 4', isActive: true, createdBy: 'test-teacher',
+      });
+      const lessonId = await createLesson({
+        title_en: 'Lesson removed repeatedly', title_ar: 'Lesson removed repeatedly', type: 'video', duration: '10 min',
+        gradeLevel: 'Grade 4', isPublished: false, packageId,
+      });
+
+      await removeLessonFromPackage(packageId, lessonId);
+      await expect(removeLessonFromPackage(packageId, lessonId)).resolves.toBeUndefined();
+
+      const lesson = await getLessonById(lessonId);
+      expect(lesson?.id).toBe(lessonId);
+      expect(lesson?.isPublished).toBe(false);
+      expect(lesson?.packageId).toBe(packageId);
+      expect(lesson?.packageIds).toEqual([]);
+      expect((await getCoursePackageById(packageId))?.lessonIds).toEqual([]);
+    });
+
     it('should allow access to legacy lessons (no package)', async () => {
       const hasAccess = await hasLessonAccess('test-student-uid', {
         id: 'legacy-lesson',
@@ -772,8 +857,7 @@ packageServiceDescribe('Package Service', () => {
       const result = await redeemPackageAccessCode(code.code, 'test-student-uid', 'Grade 4');
 
       expect(result.success).toBe(true);
-      const hasAccess = await hasLessonAccess('test-student-uid', {
-        id: 'owned-package-lesson',
+      const lessonId = await createLesson({
         title_en: 'Owned Package Lesson',
         title_ar: 'درس الباقة المملوكة',
         type: 'video',
@@ -782,6 +866,8 @@ packageServiceDescribe('Package Service', () => {
         isPublished: true,
         packageId,
       });
+      const lesson = await getLessonById(lessonId);
+      const hasAccess = lesson ? await hasLessonAccess('test-student-uid', lesson) : false;
 
       expect(hasAccess).toBe(true);
     });

@@ -12,8 +12,10 @@ import {
   disablePackageAccessCode,
   deactivateCoursePackage,
 } from '@/lib/firestore/packageService';
+import { addLessonsToPackage, getAllLessons, removeLessonFromPackage } from '@/lib/firestore/lessonService';
 import { createCoursePackageWithOptionalCover } from '@/lib/firestore/packageCreation';
-import type { CoursePackage, PackageAccessCode } from '@/types/models';
+import type { CoursePackage, Lesson, PackageAccessCode } from '@/types/models';
+import { isLessonInPackage } from '@/lib/firestore/lessonMembership';
 import { getPackageCoverFileError } from '@/lib/packageCoverUpload';
 
 const gradeLevels = [
@@ -66,6 +68,12 @@ export default function PackageManager() {
   const coverImageInputRef = useRef<HTMLInputElement>(null);
   const [newPackageIsActive, setNewPackageIsActive] = useState(true);
   const [selectedPackage, setSelectedPackage] = useState<CoursePackage | null>(null);
+  const [lessonPackage, setLessonPackage] = useState<CoursePackage | null>(null);
+  const [repositoryLessons, setRepositoryLessons] = useState<Lesson[]>([]);
+  const [lessonSearch, setLessonSearch] = useState('');
+  const [selectedLessonIds, setSelectedLessonIds] = useState<string[]>([]);
+  const [loadingRepositoryLessons, setLoadingRepositoryLessons] = useState(false);
+  const [savingLessonAssignments, setSavingLessonAssignments] = useState(false);
   const [accessCodes, setAccessCodes] = useState<PackageAccessCode[]>([]);
   const [packageOwners, setPackageOwners] = useState<Array<{ id: string; studentId: string; packageId: string; activatedAt: string; status: 'active' | 'revoked'; studentName?: string; email?: string; gradeLevel?: string }>>([]);
   const [codeQuantity, setCodeQuantity] = useState('1');
@@ -131,6 +139,63 @@ export default function PackageManager() {
       setPackageOwners(owners);
     } catch (error) {
       pushToast('error', isAr ? 'فشل تحميل مالكي الباقة' : 'Failed to load package owners');
+    }
+  };
+
+  const openLessonManager = async (coursePackage: CoursePackage) => {
+    setLessonPackage(coursePackage);
+    setLessonSearch('');
+    setSelectedLessonIds([]);
+    setLoadingRepositoryLessons(true);
+    try {
+      setRepositoryLessons(await getAllLessons());
+    } catch (error) {
+      console.error('Failed to load lessons for package assignment:', error);
+      setRepositoryLessons([]);
+      pushToast('error', isAr ? 'تعذر تحميل الدروس من المستودع' : 'Could not load repository lessons');
+    } finally {
+      setLoadingRepositoryLessons(false);
+    }
+  };
+
+  const addSelectedLessons = async () => {
+    if (!lessonPackage || selectedLessonIds.length === 0) return;
+    setSavingLessonAssignments(true);
+    try {
+      await addLessonsToPackage(lessonPackage.id, selectedLessonIds);
+      const lessonIds = [...new Set([...(lessonPackage.lessonIds ?? []), ...selectedLessonIds])];
+      const updatedPackage = { ...lessonPackage, lessonIds };
+      setLessonPackage(updatedPackage);
+      setPackages((previous) => previous.map((item) => item.id === updatedPackage.id ? updatedPackage : item));
+      setSelectedLessonIds([]);
+      pushToast('success', isAr ? 'تمت إضافة الدروس الموجودة إلى الباقة' : 'Existing lessons added to the package');
+    } catch (error) {
+      console.error('Failed to add lessons to package:', error);
+      pushToast('error', error instanceof Error ? error.message : isAr ? 'تعذرت إضافة الدروس' : 'Could not add lessons');
+    } finally {
+      setSavingLessonAssignments(false);
+    }
+  };
+
+  const removeLesson = async (lesson: Lesson) => {
+    if (!lessonPackage) return;
+    const title = lesson.title_en || lesson.title_ar;
+    if (!confirm(isAr ? `إزالة "${title}" من هذه الباقة؟ سيبقى الدرس في المستودع.` : `Remove "${title}" from this package? The lesson will stay in the repository.`)) return;
+    setSavingLessonAssignments(true);
+    try {
+      await removeLessonFromPackage(lessonPackage.id, lesson.id);
+      const updatedPackage = {
+        ...lessonPackage,
+        lessonIds: (lessonPackage.lessonIds ?? []).filter((id) => id !== lesson.id),
+      };
+      setLessonPackage(updatedPackage);
+      setPackages((previous) => previous.map((item) => item.id === updatedPackage.id ? updatedPackage : item));
+      pushToast('success', isAr ? 'تمت إزالة الدرس من هذه الباقة' : 'Lesson removed from this package');
+    } catch (error) {
+      console.error('Failed to remove lesson from package:', error);
+      pushToast('error', error instanceof Error ? error.message : isAr ? 'تعذرت إزالة الدرس' : 'Could not remove lesson');
+    } finally {
+      setSavingLessonAssignments(false);
     }
   };
 
@@ -498,6 +563,12 @@ export default function PackageManager() {
                   </div>
                   <div className="flex gap-2">
                     <button
+                      onClick={() => void openLessonManager(pkg)}
+                      className="rounded-xl border border-cyan-400/25 bg-cyan-500/10 px-3 py-2 text-sm font-medium text-cyan-100 transition hover:border-cyan-300/50"
+                    >
+                      {isAr ? 'إدارة الدروس' : 'Manage Lessons'}
+                    </button>
+                    <button
                       onClick={() => {
                         setSelectedPackage(pkg);
                         setCodeQuantity('1');
@@ -523,6 +594,85 @@ export default function PackageManager() {
           </div>
         )}
       </div>
+
+      {lessonPackage && (
+        <section className="rounded-2xl border border-cyan-400/20 bg-cyan-500/5 p-5 sm:p-6" aria-label={isAr ? 'إدارة دروس الباقة' : 'Package lesson management'}>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-lg font-semibold text-white">{isAr ? 'دروس الباقة' : 'Package Lessons'} · {lessonPackage.name}</h3>
+              <p className="mt-1 text-xs text-slate-400">{isAr ? 'اختر دروسًا موجودة. تظل المسودة مسودة حتى تنشرها من المستودع.' : 'Select existing lessons. Drafts stay drafts until you publish them from the repository.'}</p>
+            </div>
+            <button type="button" onClick={() => setLessonPackage(null)} className="rounded-lg border border-white/10 px-3 py-2 text-sm text-slate-200">{isAr ? 'إغلاق' : 'Close'}</button>
+          </div>
+
+          <label className="mb-4 block">
+            <span className="sr-only">{isAr ? 'ابحث عن درس' : 'Search lessons'}</span>
+            <input
+              type="search"
+              value={lessonSearch}
+              onChange={(event) => setLessonSearch(event.target.value)}
+              placeholder={isAr ? 'ابحث بالعنوان أو النوع...' : 'Search by title or lesson type...'}
+              className="w-full rounded-xl border border-white/10 bg-slate-900/80 px-4 py-3 text-sm text-white placeholder:text-slate-500 focus:border-cyan-400/50 focus:outline-none"
+            />
+          </label>
+
+          {loadingRepositoryLessons ? (
+            <p className="rounded-xl bg-slate-950/50 p-5 text-center text-sm text-slate-400">{isAr ? 'جارٍ تحميل الدروس...' : 'Loading repository lessons...'}</p>
+          ) : repositoryLessons.filter((lesson) => lesson.gradeLevel === lessonPackage.gradeLevel).length === 0 ? (
+            <p className="rounded-xl bg-slate-950/50 p-5 text-center text-sm text-slate-400">{isAr ? 'لا توجد دروس لهذا الصف في المستودع.' : 'No lessons exist for this package grade yet.'}</p>
+          ) : repositoryLessons.filter((lesson) => {
+            if (lesson.gradeLevel !== lessonPackage.gradeLevel) return false;
+            const search = lessonSearch.trim().toLocaleLowerCase();
+            return !search || [lesson.title_en, lesson.title_ar, lesson.type, lesson.duration]
+              .some((value) => value?.toLocaleLowerCase().includes(search));
+          }).length === 0 ? (
+            <p className="rounded-xl bg-slate-950/50 p-5 text-center text-sm text-slate-400">{isAr ? 'لا توجد دروس تطابق البحث.' : 'No lessons match your search.'}</p>
+          ) : (
+            <div className="max-h-[28rem] space-y-2 overflow-y-auto">
+              {repositoryLessons.filter((lesson) => {
+                if (lesson.gradeLevel !== lessonPackage.gradeLevel) return false;
+                const search = lessonSearch.trim().toLocaleLowerCase();
+                return !search || [lesson.title_en, lesson.title_ar, lesson.type, lesson.duration]
+                  .some((value) => value?.toLocaleLowerCase().includes(search));
+              }).map((lesson) => {
+                const included = (lessonPackage.lessonIds ?? []).includes(lesson.id)
+                  || isLessonInPackage(lesson, lessonPackage.id);
+                return (
+                  <div key={lesson.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-slate-950/50 p-3">
+                    <label className="flex min-w-0 flex-1 items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={included || selectedLessonIds.includes(lesson.id)}
+                        disabled={included || savingLessonAssignments}
+                        onChange={(event) => setSelectedLessonIds((previous) => event.target.checked
+                          ? [...new Set([...previous, lesson.id])]
+                          : previous.filter((id) => id !== lesson.id))}
+                        className="mt-1 accent-cyan-400"
+                      />
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-white">{isAr ? lesson.title_ar || lesson.title_en : lesson.title_en || lesson.title_ar}</span>
+                        <span className="mt-1 block text-xs text-slate-400">{lesson.type} · {lesson.duration || '—'} · {lesson.gradeLevel}</span>
+                      </span>
+                    </label>
+                    <div className="flex items-center gap-2">
+                      <span className={`rounded-full px-2 py-1 text-[10px] font-semibold ${lesson.isPublished ? 'bg-emerald-500/10 text-emerald-200' : 'bg-amber-500/10 text-amber-200'}`}>
+                        {lesson.isPublished ? (isAr ? 'منشور' : 'Published') : (isAr ? 'مسودة' : 'Draft')}
+                      </span>
+                      {included && <button type="button" onClick={() => void removeLesson(lesson)} disabled={savingLessonAssignments} className="rounded-lg border border-rose-400/20 px-2.5 py-1.5 text-xs text-rose-200 disabled:opacity-50">{isAr ? 'إزالة من الباقة' : 'Remove from package'}</button>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="mt-4 flex justify-end">
+            <button type="button" onClick={() => void addSelectedLessons()} disabled={selectedLessonIds.length === 0 || savingLessonAssignments} className="cyber-button rounded-xl border border-cyan-400/25 bg-cyan-500/10 px-4 py-2.5 text-sm font-semibold text-cyan-100 disabled:cursor-not-allowed disabled:opacity-50">
+              {savingLessonAssignments ? (isAr ? 'جارٍ الحفظ...' : 'Saving...') : isAr ? `إضافة الدروس المحددة (${selectedLessonIds.length})` : `Add selected lessons (${selectedLessonIds.length})`}
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Access Codes Management */}
       {selectedPackage && (

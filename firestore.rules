@@ -78,6 +78,13 @@ service cloud.firestore {
         && !request.resource.data.keys().hasAny(['lastLinkedCode']);
     }
 
+    function hasNoPackageEntitlementsOnCreate() {
+      return (!request.resource.data.keys().hasAny(['accessiblePackageIds'])
+          || (request.resource.data.accessiblePackageIds is list
+            && request.resource.data.accessiblePackageIds.size() == 0))
+        && !request.resource.data.keys().hasAny(['lastRedeemedAccessCode']);
+    }
+
     function canReadStudentRecord(studentId) {
       return isTeacher()
         || (isStudent() && isOwner(studentId))
@@ -93,12 +100,52 @@ service cloud.firestore {
         && get(accessPath).data.status == 'active';
     }
 
+    function packageEntitlementRemovedAfterWrite(studentId, packageId) {
+      let studentPath = /databases/$(database)/documents/users/$(studentId);
+      return exists(studentPath)
+        && getAfter(studentPath).data.accessiblePackageIds is list
+        && !(packageId in getAfter(studentPath).data.accessiblePackageIds);
+    }
+
     function packageContainsLesson(packageId, lessonId) {
       let packagePath = /databases/$(database)/documents/coursePackages/$(packageId);
       return exists(packagePath)
         && get(packagePath).data.gradeLevel == resource.data.gradeLevel
         && get(packagePath).data.lessonIds is list
         && get(packagePath).data.lessonIds.hasAny([lessonId]);
+    }
+
+    function isUnbundledLesson(lessonData) {
+      return lessonData.packageId == null
+        && !lessonData.keys().hasAny(['packageIds']);
+    }
+
+    function hasOwnedPackageLessonReference(lessonData) {
+      let lessonPackageIds = lessonData.keys().hasAny(['packageIds'])
+        ? lessonData.packageIds
+        : [];
+      let accessiblePackageIds = currentUser().data.keys().hasAny(['accessiblePackageIds'])
+        ? currentUser().data.accessiblePackageIds
+        : [];
+      return isStudent()
+        && lessonPackageIds is list
+        && accessiblePackageIds is list
+        && lessonPackageIds.hasAny(accessiblePackageIds);
+    }
+
+    function canStudentAccessPublishedLesson(lessonId) {
+      let lessonPath = /databases/$(database)/documents/lessons/$(lessonId);
+      let lessonData = get(lessonPath).data;
+      return exists(lessonPath)
+        && isStudent()
+        && currentUser().data.status == 'active'
+        && lessonData.isPublished == true
+        && lessonData.gradeLevel == currentUser().data.gradeLevel
+        && (isUnbundledLesson(lessonData)
+          || (lessonData.packageId is string
+            && hasPackageOwnership(lessonData.packageId)
+            && packageContainsLesson(lessonData.packageId, lessonId))
+          || hasOwnedPackageLessonReference(lessonData));
     }
 
     function isValidPackageRedemption(userId) {
@@ -134,10 +181,12 @@ service cloud.firestore {
       allow create: if isOwner(userId)
         && ((isTeacher()
           && request.resource.data.role == 'student'
-          && request.resource.data.status == 'active')
+          && request.resource.data.status == 'active'
+          && hasNoPackageEntitlementsOnCreate())
         || (!isTeacher()
           && request.resource.data.role == 'student'
-          && request.resource.data.status == 'active')
+          && request.resource.data.status == 'active'
+          && hasNoPackageEntitlementsOnCreate())
         || (!isTeacher()
           && request.resource.data.role == 'parent'
           && request.resource.data.status == 'active'
@@ -168,10 +217,11 @@ service cloud.firestore {
           && resource.data.isPublished == true
           && (isParent()
             || currentUser().data.gradeLevel == resource.data.gradeLevel)
-          && (resource.data.packageId == null
+          && (isUnbundledLesson(resource.data)
             || (resource.data.packageId is string
               && hasPackageOwnership(resource.data.packageId)
-              && packageContainsLesson(resource.data.packageId, lessonId))));
+              && packageContainsLesson(resource.data.packageId, lessonId))
+            || hasOwnedPackageLessonReference(resource.data)));
       allow list: if isTeacher()
         || (isStudent()
           && currentUser().data.status == 'active'
@@ -289,6 +339,7 @@ service cloud.firestore {
         && request.resource.data.status == 'queued'
         && request.resource.data.submittedAt is string
         && request.resource.data.submittedAt.size() > 0
+        && canStudentAccessPublishedLesson(request.resource.data.lessonId)
         && (!request.resource.data.keys().hasAny(['id'])
           || (request.resource.data.id is string && request.resource.data.id.size() > 0))
         && (!request.resource.data.keys().hasAny(['idempotencyKey'])
@@ -389,8 +440,13 @@ service cloud.firestore {
         && getAfter(/databases/$(database)/documents/packageAccessCodes/$(request.resource.data.codeId)).data.packageId == request.resource.data.packageId
         && getAfter(/databases/$(database)/documents/packageAccessCodes/$(request.resource.data.codeId)).data.active == false;
 
-      allow update: if isTeacher();
-      allow delete: if isTeacher();
+      allow update: if isTeacher()
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.packageId == resource.data.packageId
+        && (request.resource.data.status == 'active'
+          || packageEntitlementRemovedAfterWrite(resource.data.studentId, resource.data.packageId));
+      allow delete: if isTeacher()
+        && packageEntitlementRemovedAfterWrite(resource.data.studentId, resource.data.packageId);
     }
 
     // ============================================================================

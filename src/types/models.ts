@@ -276,6 +276,8 @@ export interface Lesson {
   activities?: Activity[];
   // Package access (optional for backward compatibility)
   packageId?: string | null;
+  // Reciprocal package memberships; packageId remains the legacy primary reference.
+  packageIds?: string[];
 }
 
 export interface GradeEntry {

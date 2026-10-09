@@ -14,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import type { CoursePackage, PackageAccessCode, StudentPackageAccess, Lesson } from '@/types/models';
+import { getLessonPackageIds, isLessonAccessibleToStudent } from '@/lib/firestore/lessonMembership';
 
 const normalizePackageIds = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
@@ -412,17 +413,20 @@ export async function getStudentPackages(studentId: string): Promise<CoursePacka
 
 export async function getLessonsByPackage(packageId: string): Promise<Lesson[]> {
   try {
-    const q = query(
-      collection(db, 'lessons'),
-      where('packageId', '==', packageId),
-      where('isPublished', '==', true),
-      orderBy('order', 'asc')
-    );
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map((document) => ({
-      id: document.id,
-      ...document.data(),
-    })) as Lesson[];
+    const coursePackage = await getCoursePackageById(packageId);
+    if (!coursePackage) return [];
+    const lessonIds = normalizePackageIds(coursePackage.lessonIds);
+    const snapshots = await Promise.all(lessonIds.map(async (lessonId) => {
+      try {
+        return await getDoc(doc(db, 'lessons', lessonId));
+      } catch {
+        return null;
+      }
+    }));
+    return snapshots
+      .flatMap((snapshot) => snapshot?.exists() ? [{ id: snapshot.id, ...snapshot.data() } as Lesson] : [])
+      .filter((lesson) => lesson.isPublished === true && getLessonPackageIds(lesson).includes(packageId))
+      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   } catch (error) {
     console.error('Error fetching lessons by package:', error);
     throw error;
@@ -431,15 +435,12 @@ export async function getLessonsByPackage(packageId: string): Promise<Lesson[]> 
 
 export async function hasLessonAccess(studentId: string, lesson: Lesson): Promise<boolean> {
   try {
-    if (!lesson.packageId) {
-      const studentDoc = await getDoc(doc(db, 'users', studentId));
-      if (!studentDoc.exists()) return false;
-
-      const studentData = studentDoc.data() as { gradeLevel?: string } | undefined;
-      return studentData?.gradeLevel === lesson.gradeLevel;
-    }
-
-    return studentHasPackageAccess(studentId, lesson.packageId);
+    const studentDoc = await getDoc(doc(db, 'users', studentId));
+    if (!studentDoc.exists()) return false;
+    const studentData = studentDoc.data() as { gradeLevel?: string; role?: string; status?: string };
+    if (studentData.role !== 'student' || studentData.status !== 'active') return false;
+    const ownedPackages = await getStudentPackages(studentId);
+    return isLessonAccessibleToStudent(lesson, studentData.gradeLevel ?? '', ownedPackages);
   } catch (error) {
     console.error('Error checking lesson access:', error);
     return false;
@@ -463,7 +464,6 @@ export async function getAccessibleLessonsForStudent(
     } catch (error) {
       console.error('Error loading owned packages for lesson access:', error);
     }
-    const ownedPackagesById = new Map(ownedPackages.map((coursePackage) => [coursePackage.id, coursePackage]));
     const lessonIds = [...new Set(ownedPackages.flatMap((coursePackage) => {
       const packageWithLessons = coursePackage as CoursePackage & { lessonIds?: unknown };
       return normalizePackageIds(packageWithLessons.lessonIds);
@@ -479,24 +479,18 @@ export async function getAccessibleLessonsForStudent(
       id: document.id,
       ...document.data(),
     })) as Lesson[];
+    const visibleUnbundledLessons = unbundledLessons.filter((lesson) =>
+      isLessonAccessibleToStudent(lesson, gradeLevel, [])
+    );
     const ownedLessons: Lesson[] = [];
     for (const lessonSnapshot of ownedLessonSnapshots) {
       if (!lessonSnapshot?.exists()) continue;
       const lesson = { id: lessonSnapshot.id, ...lessonSnapshot.data() } as Lesson;
-      const packageWithLessons = lesson.packageId ? ownedPackagesById.get(lesson.packageId) : undefined;
-      const packageLessonIds = packageWithLessons
-        ? normalizePackageIds((packageWithLessons as CoursePackage & { lessonIds?: unknown }).lessonIds)
-        : [];
-      if (
-        lesson.isPublished
-        && lesson.gradeLevel === gradeLevel
-        && lesson.packageId
-        && packageLessonIds.includes(lesson.id)
-      ) {
+      if (isLessonAccessibleToStudent(lesson, gradeLevel, ownedPackages)) {
         ownedLessons.push(lesson);
       }
     }
-    return [...unbundledLessons, ...ownedLessons];
+    return [...visibleUnbundledLessons, ...ownedLessons];
   } catch (error) {
     console.error('Error fetching accessible lessons:', error);
     throw error;

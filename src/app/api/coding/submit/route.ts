@@ -12,6 +12,7 @@ import { createCodingEvaluation, upsertCodingActivityProgress, getCodingActivity
 import { validateChallengeCompatibility, validatePrivateConfigCompatibility, deriveTrustedExecutionLimits } from '@/lib/coding/pipeline';
 import { createRemoteExecutionService, RemoteExecutionService } from '@/lib/coding/executionClient';
 import type { CodingChallengeActivity, PrivateChallengeConfiguration, Lesson } from '@/types/models';
+import { isLessonAccessibleToStudent } from '@/lib/firestore/lessonMembership';
 
 interface SubmitCodingRequest {
   lessonId: string;
@@ -118,6 +119,46 @@ export async function POST(request: NextRequest) {
     }
 
     const lesson = lessonDoc.data() as Lesson;
+
+    const studentDoc = await getAdminDb().collection('users').doc(studentUid).get();
+    const student = studentDoc.data() as { role?: string; status?: string; gradeLevel?: string } | undefined;
+    if (!studentDoc.exists || student?.role !== 'student' || student.status !== 'active') {
+      return NextResponse.json({ error: 'Active student account required' }, { status: 403 });
+    }
+
+    if (!student.gradeLevel || lesson.isPublished !== true || lesson.gradeLevel !== student.gradeLevel) {
+      return NextResponse.json({ error: 'Lesson is not available to this student' }, { status: 403 });
+    }
+
+    const packageIds = Array.isArray(lesson.packageIds)
+      ? [...new Set(lesson.packageIds.filter((packageId): packageId is string => typeof packageId === 'string'))]
+      : typeof lesson.packageId === 'string' ? [lesson.packageId] : [];
+    const ownedPackages: Array<{ id: string; gradeLevel: string; lessonIds: string[] }> = [];
+    for (const packageId of packageIds) {
+      const [accessSnapshot, packageSnapshot] = await Promise.all([
+        getAdminDb().collection('studentPackageAccess').doc(`${studentUid}_${packageId}`).get(),
+        getAdminDb().collection('coursePackages').doc(packageId).get(),
+      ]);
+      const access = accessSnapshot.data();
+      const coursePackage = packageSnapshot.data();
+      if (
+        accessSnapshot.exists
+        && access?.studentId === studentUid
+        && access.packageId === packageId
+        && access.status === 'active'
+        && packageSnapshot.exists
+        && coursePackage?.gradeLevel === lesson.gradeLevel
+      ) {
+        ownedPackages.push({
+          id: packageId,
+          gradeLevel: String(coursePackage.gradeLevel),
+          lessonIds: Array.isArray(coursePackage.lessonIds) ? coursePackage.lessonIds.filter((id: unknown): id is string => typeof id === 'string') : [],
+        });
+      }
+    }
+    if (!isLessonAccessibleToStudent(lesson, student.gradeLevel, ownedPackages)) {
+      return NextResponse.json({ error: 'Lesson is not available to this student' }, { status: 403 });
+    }
 
     // Verify lesson contains the activity
     const activity = lesson.activities?.find((a: any) => a.id === activityId);

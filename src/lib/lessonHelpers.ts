@@ -61,7 +61,9 @@ export function getOrderedActivities(activities: Activity[] | null | undefined):
 
 /** Filters already-authorized lessons to the selected package without fetching additional lesson data. */
 export function getLessonsForPackage(lessons: Lesson[], packageId: string): Lesson[] {
-  return lessons.filter((lesson) => lesson.packageId === packageId);
+  return lessons.filter((lesson) => Array.isArray(lesson.packageIds)
+    ? lesson.packageIds.includes(packageId)
+    : lesson.packageId === packageId);
 }
 
 export function getActivityRendererKind(activity: unknown): ActivityRendererKind {

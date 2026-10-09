@@ -207,6 +207,14 @@ rulesDescribe('MASRIA Firestore Rules', () => {
     }));
   });
 
+  it('prevents students from granting themselves package entitlements at signup', async () => {
+    const studentDb = testEnv.authenticatedContext('forged-entitlement-student').firestore();
+    await assertFails(setDoc(doc(studentDb, 'users/forged-entitlement-student'), {
+      ...studentProfile('forged-entitlement-student'),
+      accessiblePackageIds: ['package-grade-4'],
+    }));
+  });
+
   it('allows the student signup profile and link-code writes in sequence', async () => {
     const studentDb = testEnv.authenticatedContext('signup-student').firestore();
     const profile = {
@@ -437,6 +445,14 @@ rulesDescribe('MASRIA Firestore Rules', () => {
       await assertFails(getDocs(collection(studentDb, 'coursePackages')));
     });
 
+    it('prevents students from changing lesson publication or package relationships', async () => {
+      const studentDb = testEnv.authenticatedContext('student-a').firestore();
+      await assertFails(updateDoc(doc(studentDb, 'lessons/package-lesson'), { isPublished: false }));
+      await assertFails(updateDoc(doc(studentDb, 'lessons/package-lesson'), { packageId: null }));
+      await assertFails(updateDoc(doc(studentDb, 'lessons/package-lesson'), { packageIds: [] }));
+      await assertFails(updateDoc(doc(studentDb, 'coursePackages/package-grade-4'), { lessonIds: [] }));
+    });
+
     it('allows unbundled lessons and rejects package lessons without ownership', async () => {
       const studentDb = testEnv.authenticatedContext('student-a').firestore();
       const unbundledLessons = query(
@@ -481,6 +497,73 @@ rulesDescribe('MASRIA Firestore Rules', () => {
 
       const studentDb = testEnv.authenticatedContext('student-a').firestore();
       await assertSucceeds(getDoc(doc(studentDb, 'lessons/package-lesson')));
+    });
+
+    it('requires package entitlement removal to be atomic with access revocation', async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const firestore = context.firestore();
+        await updateDoc(doc(firestore, 'users/student-a'), { accessiblePackageIds: ['package-grade-4'] });
+        await setDoc(doc(firestore, 'studentPackageAccess/student-a_package-grade-4'), {
+          studentId: 'student-a', packageId: 'package-grade-4', status: 'active',
+        });
+      });
+
+      const teacherDb = testEnv.authenticatedContext('teacher', {
+        email: 'aymankareem548@gmail.com',
+      }).firestore();
+      const studentDb = testEnv.authenticatedContext('student-a').firestore();
+      const accessRef = doc(teacherDb, 'studentPackageAccess/student-a_package-grade-4');
+
+      await assertFails(updateDoc(accessRef, { status: 'revoked' }));
+      const batch = writeBatch(teacherDb);
+      batch.update(doc(teacherDb, 'users/student-a'), { accessiblePackageIds: [] });
+      batch.update(accessRef, { status: 'revoked' });
+      await assertSucceeds(batch.commit());
+      await assertFails(getDoc(doc(studentDb, 'lessons/package-lesson')));
+    });
+
+    it('allows a published lesson through any owned reciprocal package membership', async () => {
+      const lessonId = 'shared-package-lesson';
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const firestore = context.firestore();
+        await setDoc(doc(firestore, 'users/student-a'), {
+          ...studentProfile('student-a'),
+          accessiblePackageIds: ['package-grade-4-november'],
+        });
+        await setDoc(doc(firestore, 'studentPackageAccess/student-a_package-grade-4-november'), {
+          studentId: 'student-a', packageId: 'package-grade-4-november', status: 'active',
+        });
+        await setDoc(doc(firestore, 'coursePackages/package-grade-4-november'), {
+          name: 'November', gradeLevel: 'Grade 4', lessonIds: [lessonId], isActive: true,
+        });
+        await setDoc(doc(firestore, `lessons/${lessonId}`), {
+          title: 'Shared lesson', gradeLevel: 'Grade 4', isPublished: true,
+          packageId: 'package-grade-4', packageIds: ['package-grade-4', 'package-grade-4-november'],
+        });
+      });
+
+      await assertSucceeds(getDoc(doc(testEnv.authenticatedContext('student-a').firestore(), `lessons/${lessonId}`)));
+      await assertFails(getDoc(doc(testEnv.authenticatedContext('student-b').firestore(), `lessons/${lessonId}`)));
+    });
+
+    it('keeps a draft inaccessible when its ID is referenced by an owned package', async () => {
+      const lessonId = 'owned-package-draft';
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        const firestore = context.firestore();
+        await setDoc(doc(firestore, 'users/student-a'), {
+          ...studentProfile('student-a'), accessiblePackageIds: ['package-grade-4'],
+        });
+        await setDoc(doc(firestore, 'studentPackageAccess/student-a_package-grade-4'), {
+          studentId: 'student-a', packageId: 'package-grade-4', status: 'active',
+        });
+        await setDoc(doc(firestore, `lessons/${lessonId}`), {
+          title: 'Draft', gradeLevel: 'Grade 4', isPublished: false,
+          packageId: 'package-grade-4', packageIds: ['package-grade-4'],
+        });
+        await updateDoc(doc(firestore, 'coursePackages/package-grade-4'), { lessonIds: [lessonId] });
+      });
+
+      await assertFails(getDoc(doc(testEnv.authenticatedContext('student-a').firestore(), `lessons/${lessonId}`)));
     });
 
     it('denies package lessons without ownership, with a wrong grade, or unpublished', async () => {
@@ -1209,6 +1292,26 @@ rulesDescribe('MASRIA Firestore Rules', () => {
         challengeVersion: 1,
         language: 'cpp17',
         sourceCode: '#include <iostream>\nint main() { return 0; }',
+        status: 'queued',
+        submittedAt: '2026-08-27T00:00:00.000Z',
+      }));
+    });
+
+    it('student cannot submit coding work for a draft lesson', async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await setDoc(doc(context.firestore(), 'lessons/draft-coding-lesson'), {
+          title: 'Draft coding lesson', gradeLevel: 'Grade 4', isPublished: false,
+          packageId: null,
+        });
+      });
+      const studentDb = testEnv.authenticatedContext('student-a').firestore();
+      await assertFails(setDoc(doc(studentDb, 'coding_submissions/draft-lesson-submission'), {
+        studentId: 'student-a',
+        lessonId: 'draft-coding-lesson',
+        activityId: 'activity-1',
+        challengeVersion: 1,
+        language: 'cpp17',
+        sourceCode: 'int main() { return 0; }',
         status: 'queued',
         submittedAt: '2026-08-27T00:00:00.000Z',
       }));
