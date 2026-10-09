@@ -33,7 +33,7 @@ const isAdminEmail = (email?: string | null) => {
 type Theme = 'light' | 'dark';
 type StudentStatus = StudentStatusModel;
 type LessonType = 'video' | 'pdf' | 'quiz_only' | 'hybrid';
-type ActiveSection = 'analytics' | 'students' | 'repository' | 'addLesson' | 'exams' | 'announcements';
+type ActiveSection = 'analytics' | 'students' | 'repository' | 'addLesson' | 'exams' | 'announcements' | 'packages';
 
 type Announcement = AnnouncementModel;
 
