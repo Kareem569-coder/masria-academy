@@ -8,7 +8,7 @@ import {
   onAuthStateChanged,
   User 
 } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 import { isTeacherEmail } from '@/lib/authorization';
 import { createStudentLinkCode, linkStudentToParent } from '@/lib/firestore/parentLinking';
@@ -54,13 +54,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const userData = userDoc.data();
           const isTeacher = isTeacherEmail(currentUser.email);
 
-          // إذا كان طالباً وحالته pending، نمنع دخوله بتسجيل الخروج بهدوء
+          // Migrate accounts created under the old manual-approval policy.
           if (!isTeacher && userData.role === 'student' && userData.status === 'pending') {
-            await signOut(auth);
-            setUser(null);
-            setRole(null);
-            setLoading(false);
-            return;
+            await updateDoc(doc(db, 'users', currentUser.uid), { status: 'active' });
           }
 
           setUser(currentUser);
@@ -90,8 +86,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userData = userDoc.data();
       
       if (!isTeacher && userData.role === 'student' && userData.status === 'pending') {
-        await signOut(auth);
-        throw new Error('حسابك قيد المراجعة في انتظار موافقة إدارة MASRIA.');
+        await updateDoc(doc(db, 'users', user.uid), { status: 'active' });
       }
 
       return { role: userData.role as 'student' | 'parent' };
@@ -102,6 +97,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signup = async (name: string, email: string, password: string, role: 'student' | 'parent', gradeLevel?: string) => {
     const isTeacher = isTeacherEmail(email);
+
+    if (role === 'student' && !gradeLevel) {
+      throw new Error('A grade level is required for student registration.');
+    }
 
     // Set flag to prevent auth state listener from interfering
     setIsSignupInProgress(true);
@@ -142,8 +141,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           name,
           email,
           role,
-          gradeLevel: gradeLevel || 'Grade 4',
-          status: 'pending', 
+          gradeLevel,
+          status: 'active',
           linkCode,
           createdAt: new Date().toISOString()
         };

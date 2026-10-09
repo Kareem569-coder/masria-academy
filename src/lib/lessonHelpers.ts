@@ -59,6 +59,11 @@ export function getOrderedActivities(activities: Activity[] | null | undefined):
   return [...(activities ?? [])].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 }
 
+/** Filters already-authorized lessons to the selected package without fetching additional lesson data. */
+export function getLessonsForPackage(lessons: Lesson[], packageId: string): Lesson[] {
+  return lessons.filter((lesson) => lesson.packageId === packageId);
+}
+
 export function getActivityRendererKind(activity: unknown): ActivityRendererKind {
   if (typeof activity !== 'object' || activity === null || !('type' in activity)) {
     return 'UNKNOWN';

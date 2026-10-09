@@ -84,6 +84,48 @@ service cloud.firestore {
         || isLinkedParent(studentId);
     }
 
+    function hasPackageOwnership(packageId) {
+      let accessPath = /databases/$(database)/documents/studentPackageAccess/$(request.auth.uid + '_' + packageId);
+      return isStudent()
+        && exists(accessPath)
+        && get(accessPath).data.studentId == request.auth.uid
+        && get(accessPath).data.packageId == packageId
+        && get(accessPath).data.status == 'active';
+    }
+
+    function packageContainsLesson(packageId, lessonId) {
+      let packagePath = /databases/$(database)/documents/coursePackages/$(packageId);
+      return exists(packagePath)
+        && get(packagePath).data.gradeLevel == resource.data.gradeLevel
+        && get(packagePath).data.lessonIds is list
+        && get(packagePath).data.lessonIds.hasAny([lessonId]);
+    }
+
+    function isValidPackageRedemption(userId) {
+      let oldPackageIds = resource.data.keys().hasAny(['accessiblePackageIds'])
+        ? resource.data.accessiblePackageIds
+        : [];
+      let newPackageIds = request.resource.data.accessiblePackageIds;
+      let codeId = request.resource.data.lastRedeemedAccessCode;
+      let accessCode = getAfter(/databases/$(database)/documents/packageAccessCodes/$(codeId)).data;
+      let coursePackage = getAfter(/databases/$(database)/documents/coursePackages/$(accessCode.packageId)).data;
+
+      return isStudent()
+        && isOwner(userId)
+        && currentUser().data.status == 'active'
+        && request.resource.data.keys().hasAll(['accessiblePackageIds', 'lastRedeemedAccessCode'])
+        && (!resource.data.keys().hasAny(['lastRedeemedAccessCode'])
+          || request.resource.data.lastRedeemedAccessCode != resource.data.lastRedeemedAccessCode)
+        && newPackageIds is list
+        && newPackageIds.size() == oldPackageIds.size() + 1
+        && newPackageIds.hasAll(oldPackageIds)
+        && accessCode.usedBy == request.auth.uid
+        && accessCode.packageId in newPackageIds
+        && !(accessCode.packageId in oldPackageIds)
+        && coursePackage.isActive == true
+        && coursePackage.gradeLevel == currentUser().data.gradeLevel;
+    }
+
     match /users/{userId} {
       allow read: if isAuthenticated()
         && (isOwner(userId) || isTeacher() || isLinkedParent(userId));
@@ -95,7 +137,7 @@ service cloud.firestore {
           && request.resource.data.status == 'active')
         || (!isTeacher()
           && request.resource.data.role == 'student'
-          && request.resource.data.status == 'pending')
+          && request.resource.data.status == 'active')
         || (!isTeacher()
           && request.resource.data.role == 'parent'
           && request.resource.data.status == 'active'
@@ -108,7 +150,12 @@ service cloud.firestore {
           && request.resource.data.role == resource.data.role)
         || (isOwner(userId)
           && request.resource.data.role == resource.data.role
-          && request.resource.data.status == resource.data.status
+          && (request.resource.data.status == resource.data.status
+            || (resource.data.role == 'student'
+              && resource.data.status == 'pending'
+              && request.resource.data.status == 'active'))
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['accessiblePackageIds', 'lastRedeemedAccessCode'])
+            || isValidPackageRedemption(userId))
           && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['linkedStudentIds', 'lastLinkedCode'])
             || isValidParentLinkUpdate()));
 
@@ -116,11 +163,21 @@ service cloud.firestore {
     }
 
     match /lessons/{lessonId} {
-      allow read: if isTeacher()
+      allow get: if isTeacher()
         || (isActiveLearner()
           && resource.data.isPublished == true
           && (isParent()
-            || currentUser().data.gradeLevel == resource.data.gradeLevel));
+            || currentUser().data.gradeLevel == resource.data.gradeLevel)
+          && (resource.data.packageId == null
+            || (resource.data.packageId is string
+              && hasPackageOwnership(resource.data.packageId)
+              && packageContainsLesson(resource.data.packageId, lessonId))));
+      allow list: if isTeacher()
+        || (isStudent()
+          && currentUser().data.status == 'active'
+          && resource.data.isPublished == true
+          && resource.data.gradeLevel == currentUser().data.gradeLevel
+          && resource.data.packageId == null);
       allow create, update, delete: if isTeacher();
     }
 
@@ -293,6 +350,72 @@ service cloud.firestore {
     match /private_challenge_config/{configId} {
       allow read: if isTeacher();
       allow create, update, delete: if isTeacher();
+    }
+
+    // ============================================================================
+    // COURSE PACKAGES
+    // ============================================================================
+    // Students may browse active packages for their own grade. Previously owned
+    // packages remain readable after deactivation through the ownership record.
+    match /coursePackages/{packageId} {
+      allow read: if isTeacher()
+        || (isActiveLearner()
+          && resource.data.gradeLevel == currentUser().data.gradeLevel
+          && (resource.data.isActive == true || hasPackageOwnership(packageId)));
+
+      allow create: if isTeacher();
+      allow update: if isTeacher();
+      allow delete: if isTeacher();
+    }
+
+    // ============================================================================
+    // STUDENT PACKAGE ACCESS
+    // ============================================================================
+    // Permanent package ownership is stored here after a valid access code is redeemed.
+    match /studentPackageAccess/{accessId} {
+      allow read: if isTeacher()
+        || (isStudent() && resource.data.studentId == request.auth.uid);
+
+      allow create: if isStudent()
+        && currentUser().data.status == 'active'
+        && request.resource.data.studentId == request.auth.uid
+        && request.resource.data.packageId is string
+        && request.resource.data.codeId is string
+        && request.resource.data.status == 'active'
+        && request.resource.data.activatedAt is string
+        && request.resource.data.createdAt is string
+        && request.resource.data.updatedAt is string
+        && getAfter(/databases/$(database)/documents/packageAccessCodes/$(request.resource.data.codeId)).data.usedBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/packageAccessCodes/$(request.resource.data.codeId)).data.packageId == request.resource.data.packageId
+        && getAfter(/databases/$(database)/documents/packageAccessCodes/$(request.resource.data.codeId)).data.active == false;
+
+      allow update: if isTeacher();
+      allow delete: if isTeacher();
+    }
+
+    // ============================================================================
+    // PACKAGE ACCESS CODES
+    // ============================================================================
+    // Teachers can create and read all access codes.
+    // Students can only redeem codes via transaction (no direct write access).
+    match /packageAccessCodes/{codeId} {
+      allow read: if isTeacher()
+        || (isStudent() && resource.data.code == codeId);
+
+      allow create: if isTeacher();
+      allow update: if isStudent()
+        && currentUser().data.status == 'active'
+        && resource.data.active == true
+        && resource.data.code == codeId
+        && request.resource.data.active == false
+        && request.resource.data.usedBy == request.auth.uid
+        && request.resource.data.usedAt is string
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['active', 'usedBy', 'usedAt', 'status', 'updatedAt'])
+        && request.resource.data.packageId == resource.data.packageId
+        && request.resource.data.code == resource.data.code
+        && getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.lastRedeemedAccessCode == codeId
+        && resource.data.packageId in getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.accessiblePackageIds;
+      allow delete: if isTeacher();
     }
 
     // Deny every collection/document not explicitly listed above.

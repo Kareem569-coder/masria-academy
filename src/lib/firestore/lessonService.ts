@@ -1,17 +1,20 @@
 import {
   collection,
   doc,
+  runTransaction,
+  setDoc,
   getDoc,
   getDocs,
   query,
   where,
-  addDoc,
   updateDoc,
-  deleteDoc,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import type { Lesson, LessonCategory, Activity, ActivityType } from '@/types/models';
 import { stripPrivateChallengeSecretsFromLesson } from '@/lib/lessonHelpers';
+import type { Lesson, LessonCategory, Activity, ActivityType } from '@/types/models';
+
+const normalizeLessonIds = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 
 /**
  * Lesson Service
@@ -120,12 +123,34 @@ export async function getLessonsByCategory(
  */
 export async function createLesson(lessonData: Omit<Lesson, 'id'>): Promise<string> {
   try {
-    const sanitized = stripPrivateChallengeSecretsFromLesson(lessonData);
-    const docRef = await addDoc(collection(db, 'lessons'), {
-      ...sanitized,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
+    const docRef = doc(collection(db, 'lessons'));
+    const now = new Date().toISOString();
+    const safeLessonData = stripPrivateChallengeSecretsFromLesson(lessonData);
+    const packageId = safeLessonData.packageId ?? null;
+    const lesson = { ...safeLessonData, packageId, createdAt: now, updatedAt: now };
+
+    if (packageId) {
+      await runTransaction(db, async (transaction) => {
+        const packageRef = doc(db, 'coursePackages', packageId);
+        const packageSnapshot = await transaction.get(packageRef);
+        if (!packageSnapshot.exists()) throw new Error('Cannot assign a lesson to a missing package.');
+
+        const packageData = packageSnapshot.data();
+        if (packageData.gradeLevel !== lessonData.gradeLevel) {
+          throw new Error('Lesson grade must match its course package grade.');
+        }
+
+        const lessonIds = normalizeLessonIds(packageData.lessonIds);
+        transaction.set(docRef, lesson);
+        transaction.update(packageRef, {
+          lessonIds: lessonIds.includes(docRef.id) ? lessonIds : [...lessonIds, docRef.id],
+          updatedAt: now,
+        });
+      });
+    } else {
+      await setDoc(docRef, lesson);
+    }
+
     return docRef.id;
   } catch (error) {
     console.error('Error creating lesson:', error);
@@ -141,10 +166,56 @@ export async function updateLesson(
   updates: Partial<Lesson>
 ): Promise<void> {
   try {
-    const sanitized = stripPrivateChallengeSecretsFromLesson(updates);
-    await updateDoc(doc(db, 'lessons', lessonId), {
-      ...sanitized,
-      updatedAt: new Date().toISOString(),
+    const lessonRef = doc(db, 'lessons', lessonId);
+    const now = new Date().toISOString();
+    const safeUpdates = stripPrivateChallengeSecretsFromLesson(updates);
+    const updatesPackage = Object.prototype.hasOwnProperty.call(safeUpdates, 'packageId');
+    const updatesGrade = Object.prototype.hasOwnProperty.call(safeUpdates, 'gradeLevel');
+
+    if (!updatesPackage && !updatesGrade) {
+      await updateDoc(lessonRef, { ...safeUpdates, updatedAt: now });
+      return;
+    }
+
+    await runTransaction(db, async (transaction) => {
+      const lessonSnapshot = await transaction.get(lessonRef);
+      if (!lessonSnapshot.exists()) throw new Error('Lesson not found.');
+
+      const currentLesson = lessonSnapshot.data();
+      const oldPackageId = typeof currentLesson.packageId === 'string' ? currentLesson.packageId : null;
+      const nextPackageId = updatesPackage
+        ? (typeof safeUpdates.packageId === 'string' ? safeUpdates.packageId : null)
+        : oldPackageId;
+      const nextGrade = safeUpdates.gradeLevel ?? currentLesson.gradeLevel;
+      const affectedPackageIds = [...new Set([oldPackageId, nextPackageId].filter(
+        (packageId): packageId is string => Boolean(packageId)
+      ))];
+      const packageDataById = new Map<string, Record<string, unknown>>();
+
+      for (const packageId of affectedPackageIds) {
+        const packageRef = doc(db, 'coursePackages', packageId);
+        const packageSnapshot = await transaction.get(packageRef);
+        if (!packageSnapshot.exists()) throw new Error('Cannot update a lesson with a missing package.');
+        packageDataById.set(packageId, packageSnapshot.data());
+      }
+
+      if (nextPackageId) {
+        const nextPackage = packageDataById.get(nextPackageId);
+        if (nextPackage?.gradeLevel !== nextGrade) {
+          throw new Error('Lesson grade must match its course package grade.');
+        }
+      }
+
+      for (const packageId of affectedPackageIds) {
+        const packageRef = doc(db, 'coursePackages', packageId);
+        const currentIds = normalizeLessonIds(packageDataById.get(packageId)?.lessonIds);
+        const nextIds = packageId === nextPackageId
+          ? [...new Set([...currentIds, lessonId])]
+          : currentIds.filter((id) => id !== lessonId);
+        transaction.update(packageRef, { lessonIds: nextIds, updatedAt: now });
+      }
+
+      transaction.update(lessonRef, { ...safeUpdates, packageId: nextPackageId, updatedAt: now });
     });
   } catch (error) {
     console.error('Error updating lesson:', error);
@@ -157,7 +228,22 @@ export async function updateLesson(
  */
 export async function deleteLesson(lessonId: string): Promise<void> {
   try {
-    await deleteDoc(doc(db, 'lessons', lessonId));
+    const lessonRef = doc(db, 'lessons', lessonId);
+    await runTransaction(db, async (transaction) => {
+      const lessonSnapshot = await transaction.get(lessonRef);
+      if (!lessonSnapshot.exists()) return;
+
+      const packageId = lessonSnapshot.data().packageId;
+      const packageRef = typeof packageId === 'string' ? doc(db, 'coursePackages', packageId) : null;
+      const packageSnapshot = packageRef ? await transaction.get(packageRef) : null;
+      if (packageRef && packageSnapshot?.exists()) {
+        transaction.update(packageRef, {
+          lessonIds: normalizeLessonIds(packageSnapshot.data().lessonIds).filter((id) => id !== lessonId),
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      transaction.delete(lessonRef);
+    });
   } catch (error) {
     console.error('Error deleting lesson:', error);
     throw error;

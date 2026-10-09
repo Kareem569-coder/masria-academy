@@ -7,11 +7,14 @@ import { useState, useEffect, useMemo } from 'react';
 import { arrayRemove, arrayUnion, doc, getDoc, collection, getDocs, addDoc, query, updateDoc, where } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { getYouTubeEmbedUrl } from '@/lib/utils';
+import { getAccessibleLessonsForStudent } from '@/lib/firestore/packageService';
 import DashboardNavbar from '@/components/DashboardNavbar';
 import GlassCard from '@/components/GlassCard';
 import ActivityRenderer from '@/components/lesson/ActivityRenderer';
-import { getOrderedActivities, isActivityCompletionRequired, isLessonCompleteForActivities } from '@/lib/lessonHelpers';
+import { getLessonsForPackage, getOrderedActivities, isActivityCompletionRequired, isLessonCompleteForActivities } from '@/lib/lessonHelpers';
 import type { Activity, Announcement, ExamResult, GradeEntry, Lesson, PerformanceRecord, UserProfile } from '@/types/models';
+import PackageAccessCard from '@/components/student/PackageAccessCard';
+import AccessCodeRedemption from '@/components/student/AccessCodeRedemption';
 
 type TabType = 'dashboard' | 'lessons' | 'quiz' | 'grades' | 'announcements';
 
@@ -20,121 +23,6 @@ type StudentData = UserProfile;
 const initialGrades: GradeEntry[] = [];
 
 const PASSING_SCORE_PERCENT = 60;
-
-function buildFallbackLessons(gradeLevel: string): Lesson[] {
-  return [
-    {
-      id: 'fallback-1',
-      title_en: 'Algorithms Fundamentals',
-      title_ar: 'أساسيات الخوارزميات',
-      type: 'video',
-      duration: '45 min',
-      gradeLevel,
-      order: 1,
-      videoUrl: undefined,
-      quiz: {
-        quizTitle_en: 'Algorithm Warmup',
-        quizTitle_ar: 'تقييم الخوارزميات',
-        questions: [
-          {
-            en: 'Which data structure uses FIFO ordering?',
-            ar: 'أي هيكل بيانات يستخدم ترتيب FIFO؟',
-            options: [
-              { en: 'Stack', ar: 'المكدس' },
-              { en: 'Queue', ar: 'الطابور' },
-              { en: 'Tree', ar: 'الشجرة' },
-              { en: 'Graph', ar: 'الرسم البياني' },
-            ],
-            correct: 1,
-          },
-        ],
-      },
-    },
-    {
-      id: 'fallback-2',
-      title_en: 'Data Structures Essentials',
-      title_ar: 'أساسيات هياكل البيانات',
-      type: 'pdf',
-      duration: '30 min',
-      gradeLevel,
-      order: 2,
-      pdfUrl: '#',
-      quiz: {
-        quizTitle_en: 'Data Structures Check',
-        quizTitle_ar: 'اختبار هياكل البيانات',
-        questions: [
-          {
-            en: 'Which structure supports fast lookups by key?',
-            ar: 'أي بنية تدعم البحث السريع حسب المفتاح؟',
-            options: [
-              { en: 'Hash Map', ar: 'خريطة تجزئة' },
-              { en: 'Linked List', ar: 'قائمة متصلة' },
-              { en: 'Array', ar: 'مصفوفة' },
-              { en: 'Queue', ar: 'طابور' },
-            ],
-            correct: 0,
-          },
-        ],
-      },
-    },
-    {
-      id: 'fallback-3',
-      title_en: 'Coding Logic Patterns',
-      title_ar: 'أنماط منطق البرمجة',
-      type: 'quiz_only',
-      duration: '10 min',
-      gradeLevel,
-      order: 3,
-      quiz: {
-        quizTitle_en: 'Logic Assessment',
-        quizTitle_ar: 'تقييم المنطق',
-        questions: [
-          {
-            en: 'What is the primary purpose of a function?',
-            ar: 'ما الهدف الرئيسي للدالة؟',
-            options: [
-              { en: 'Store data permanently', ar: 'تخزين البيانات بشكل دائم' },
-              { en: 'Reuse a block of logic', ar: 'إعادة استخدام كتلة من المنطق' },
-              { en: 'Design the UI', ar: 'تصميم الواجهة' },
-              { en: 'Handle networking only', ar: 'معالجة الشبكات فقط' },
-            ],
-            correct: 1,
-          },
-        ],
-      },
-    },
-    {
-      id: 'fallback-4',
-      title_en: 'Object-Oriented Design',
-      title_ar: 'تصميم كائني التوجه',
-      type: 'pdf',
-      duration: '25 min',
-      gradeLevel,
-      order: 4,
-      pdfUrl: '#',
-    },
-    {
-      id: 'fallback-5',
-      title_en: 'Frontend Engineering Basics',
-      title_ar: 'أساسيات هندسة الواجهة',
-      type: 'video',
-      duration: '50 min',
-      gradeLevel,
-      order: 5,
-      videoUrl: undefined,
-    },
-    {
-      id: 'fallback-6',
-      title_en: 'System Design Overview',
-      title_ar: 'نظرة عامة على تصميم الأنظمة',
-      type: 'pdf',
-      duration: '35 min',
-      gradeLevel,
-      order: 6,
-      pdfUrl: '#',
-    },
-  ];
-}
 
 export default function StudentDashboard() {
   const { user, logout, loading } = useAuth();
@@ -150,7 +38,10 @@ export default function StudentDashboard() {
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
 
   const [lessons, setLessons] = useState<Lesson[]>([]);
+  const [packageRefreshToken, setPackageRefreshToken] = useState(0);
+  const [lessonRefreshToken, setLessonRefreshToken] = useState(0);
   const [loadingLessons, setLoadingLessons] = useState(true);
+  const [selectedPackage, setSelectedPackage] = useState<{ id: string; name: string } | null>(null);
   const [completedLessons, setCompletedLessons] = useState<Set<string>>(new Set());
   const [openLessonId, setOpenLessonId] = useState<string | null>(null);
 
@@ -272,27 +163,13 @@ export default function StudentDashboard() {
       setLoadingLessons(true);
       const gradeLevel = studentData?.gradeLevel || '';
       try {
-        const lessonsQuery = gradeLevel
-          ? query(
-              collection(db, 'lessons'),
-              where('gradeLevel', '==', gradeLevel),
-              where('isPublished', '==', true)
-            )
-          : query(collection(db, 'lessons'), where('isPublished', '==', true));
-        const snapshot = await getDocs(lessonsQuery);
-        const fetched: Lesson[] = snapshot.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as Omit<Lesson, 'id'>),
-        }));
+        // Use package-aware lesson fetching
+        const fetched = user ? await getAccessibleLessonsForStudent(user.uid, gradeLevel) : [];
 
-        if (fetched.length > 0) {
-          setLessons(fetched);
-        } else {
-          setLessons(buildFallbackLessons(gradeLevel || 'Grade 4'));
-        }
+        setLessons(fetched);
       } catch (error) {
         console.error('Error fetching lessons:', error);
-        setLessons(buildFallbackLessons(gradeLevel || 'Grade 4'));
+        setLessons([]);
       } finally {
         setLoadingLessons(false);
       }
@@ -301,7 +178,7 @@ export default function StudentDashboard() {
     if (!loadingData) {
       fetchLessons();
     }
-  }, [loadingData, studentData?.gradeLevel]);
+  }, [loadingData, studentData?.gradeLevel, packageRefreshToken, lessonRefreshToken, user]);
 
   // 🌟 1. تحسين جلب سجل الدرجات (تم تعريف isAr بالداخل لتجنب خطأ الترتيب)
   useEffect(() => {
@@ -350,6 +227,10 @@ export default function StudentDashboard() {
   const sortedLessons = useMemo(
     () => [...lessons].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)),
     [lessons]
+  );
+  const displayedLessons = useMemo(
+    () => selectedPackage ? getLessonsForPackage(sortedLessons, selectedPackage.id) : sortedLessons,
+    [selectedPackage, sortedLessons]
   );
 
   const isLessonLockedAt = (index: number) => {
@@ -759,26 +640,59 @@ export default function StudentDashboard() {
                     {completedLessons.size} / {lessons.length} {isAr ? 'دروس مكتملة' : 'lessons completed'}
                   </p>
                 </div>
+
+                {/* Package Access Section */}
+                {user && studentData && (
+                  <div className="mt-8 space-y-4">
+                    <PackageAccessCard
+                      studentId={user.uid}
+                      gradeLevel={studentData.gradeLevel || ''}
+                      refreshToken={packageRefreshToken}
+                      onOpenPackageLessons={(packageId, packageName) => {
+                        setSelectedPackage({ id: packageId, name: packageName });
+                        setOpenLessonId(null);
+                        setActiveTab('lessons');
+                        setLessonRefreshToken((value) => value + 1);
+                      }}
+                    />
+                    <AccessCodeRedemption
+                      studentId={user.uid}
+                      studentGradeLevel={studentData.gradeLevel || ''}
+                      onRedeemSuccess={() => {
+                        setPackageRefreshToken((value) => value + 1);
+                      }}
+                    />
+                  </div>
+                )}
               </div>
             )}
 
             {/* LESSONS TAB */}
             {activeTab === 'lessons' && (
               <div>
-                <h3 className="mb-1 text-2xl font-bold text-white">
-                  {isAr ? 'المسارات التعليمية' : 'Learning Paths'}
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-3">
+                <h3 className="text-2xl font-bold text-white">
+                  {selectedPackage ? selectedPackage.name : isAr ? 'المسارات التعليمية' : 'Learning Paths'}
                 </h3>
+                {selectedPackage && <button type="button" onClick={() => { setSelectedPackage(null); setOpenLessonId(null); }} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-slate-200 transition hover:border-cyan-400/30 hover:text-white">{isAr ? 'كل الدروس' : 'All lessons'}</button>}
+                </div>
                 <p className="mb-6 text-xs text-slate-400">
-                  {isAr ? 'أكمل الوحدات بالترتيب لفتح ما يليها' : 'Complete modules in order to unlock the next one'}
+                  {selectedPackage ? (isAr ? 'دروس هذه الباقة مرتبة حسب تسلسلها التعليمي' : 'Lessons in this package, in learning order') : isAr ? 'أكمل الوحدات بالترتيب لفتح ما يليها' : 'Complete modules in order to unlock the next one'}
                 </p>
                 {loadingLessons ? (
                   <div className="text-sm text-slate-400">{isAr ? 'جاري تحميل الدروس...' : 'Loading lessons...'}</div>
+                ) : displayedLessons.length === 0 ? (
+                  <div className="rounded-xl border border-white/10 bg-slate-950/60 p-6 text-sm text-slate-400">
+                    {selectedPackage ? (isAr ? 'لا توجد دروس متاحة في هذه الباقة حاليًا' : 'No accessible lessons are available in this package right now') : isAr ? 'لا توجد دروس متاحة حاليًا' : 'No lessons are available right now'}
+                  </div>
                 ) : (
                   <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-                    {sortedLessons.map((lesson, index) => {
+                    {displayedLessons.map((lesson, index) => {
                       const isDone = completedLessons.has(lesson.id);
                       const isOpen = openLessonId === lesson.id;
-                      const locked = isLessonLockedAt(index);
+                      const locked = selectedPackage
+                        ? index > 0 && !completedLessons.has(displayedLessons[index - 1].id)
+                        : isLessonLockedAt(index);
 
                       const contentKind: 'video' | 'pdf' | 'quick' = lesson.videoUrl
                         ? 'video'

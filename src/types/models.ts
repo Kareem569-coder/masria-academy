@@ -41,6 +41,8 @@ export interface UserProfile {
   linkedStudents?: LinkedStudent[];
   linkedStudentIds?: string[];
   lastLinkedCode?: string;
+  accessiblePackageIds?: string[];
+  lastRedeemedAccessCode?: string;
   createdAt?: string;
 }
 
@@ -272,6 +274,8 @@ export interface Lesson {
   // New architecture fields (optional for backward compatibility)
   category?: LessonCategory;
   activities?: Activity[];
+  // Package access (optional for backward compatibility)
+  packageId?: string | null;
 }
 
 export interface GradeEntry {
@@ -327,6 +331,52 @@ export interface Announcement {
   author: string;
   pinned: boolean;
   createdAt: string;
+}
+
+// ============================================================================
+// COURSE PACKAGES
+// ============================================================================
+
+export interface CoursePackage {
+  id: string;
+  name: string;
+  gradeLevel: string;
+  month?: string;
+  price?: string;
+  description?: string;
+  coverImageUrl?: string;
+  displayOrder?: number;
+  lessonIds?: string[];
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export interface PackageAccessCode {
+  id: string;
+  code: string;
+  packageId: string;
+  active: boolean;
+  status?: 'unused' | 'used' | 'disabled';
+  createdAt: string;
+  updatedAt?: string;
+  usedBy?: string;
+  usedAt?: string;
+  disabledAt?: string;
+}
+
+export interface StudentPackageAccess {
+  id: string;
+  studentId: string;
+  packageId: string;
+  codeId?: string;
+  activatedAt: string;
+  status: 'active' | 'revoked';
+  createdAt: string;
+  updatedAt: string;
+  revokedAt?: string;
+  revokedBy?: string;
 }
 
 export interface ExamGradeInput {

@@ -20,8 +20,11 @@ import {
 import { db } from '@/lib/firebase';
 import { getErrorMessage } from '@/types/models';
 import { isTeacherEmail } from '@/lib/authorization';
+import PackageManager from '@/components/teacher/PackageManager';
+import { getActivePackagesByGradeLevel } from '@/lib/firestore/packageService';
+import { createLesson, deleteLesson } from '@/lib/firestore/lessonService';
 import ActivityBuilder, { validateActivityList } from '@/components/teacher/ActivityBuilder';
-import type { Activity, Announcement as AnnouncementModel, Exam as ExamModel, PerformanceRecord, StudentStatus as StudentStatusModel, LessonCategory } from '@/types/models';
+import type { Activity, Announcement as AnnouncementModel, CoursePackage, Exam as ExamModel, PerformanceRecord, StudentStatus as StudentStatusModel, LessonCategory } from '@/types/models';
 
 const isAdminEmail = (email?: string | null) => {
   return isTeacherEmail(email);
@@ -33,6 +36,8 @@ type LessonType = 'video' | 'pdf' | 'quiz_only' | 'hybrid';
 type ActiveSection = 'analytics' | 'students' | 'repository' | 'addLesson' | 'exams' | 'announcements';
 
 type Announcement = AnnouncementModel;
+
+
 
 interface StudentRow {
   id: string;
@@ -193,11 +198,36 @@ export default function TeacherDashboard() {
   const [videoUrl, setVideoUrl] = useState('');
   const [pdfUrl, setPdfUrl] = useState('');
   const [lessonGrade, setLessonGrade] = useState('');
+
+  const [selectedPackageId, setSelectedPackageId] = useState('');
+
+  const [availablePackages, setAvailablePackages] = useState<CoursePackage[]>([]);
+
   const [isPublished, setIsPublished] = useState(false);
   const [lessonActivities, setLessonActivities] = useState<Activity[]>([]);
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [submittingLesson, setSubmittingLesson] = useState(false);
   const [lessonFormError, setLessonFormError] = useState('');
+
+  // Load packages when grade level changes
+  useEffect(() => {
+    const loadPackages = async () => {
+      if (lessonGrade) {
+        try {
+          const packages = await getActivePackagesByGradeLevel(lessonGrade);
+          setAvailablePackages(packages);
+        } catch (error) {
+          console.error('Error loading packages:', error);
+        }
+      } else {
+        setAvailablePackages([]);
+        setSelectedPackageId('');
+      }
+    };
+    loadPackages();
+  }, [lessonGrade]);
+
+
 
   // ===== Exams & Grading =====
   const [exams, setExams] = useState<ExamRow[]>([]);
@@ -748,7 +778,9 @@ export default function TeacherDashboard() {
         : `This will permanently remove "${lesson.title_en || lesson.title_ar}" from the repository.`,
       onConfirm: async () => {
         try {
-          await deleteDoc(doc(db, 'lessons', lesson.id));
+
+          await deleteLesson(lesson.id);
+
           setLessons((prev) => prev.filter((l) => l.id !== lesson.id));
           pushToast('success', isAr ? 'تم حذف الدرس' : 'Lesson deleted');
         } catch (error) {
@@ -796,6 +828,11 @@ export default function TeacherDashboard() {
     setVideoUrl('');
     setPdfUrl('');
     setLessonGrade('');
+
+    setSelectedPackageId('');
+
+    setAvailablePackages([]);
+
     setIsPublished(false);
     setLessonActivities([]);
     setQuizQuestions([]);
@@ -851,7 +888,7 @@ export default function TeacherDashboard() {
 
     setSubmittingLesson(true);
     try {
-      await addDoc(collection(db, 'lessons'), {
+      await createLesson({
         title_en: titleEn.trim(),
         title_ar: titleAr.trim(),
         duration: duration.trim(),
@@ -861,6 +898,9 @@ export default function TeacherDashboard() {
         order: lessonOrder ? Number(lessonOrder) : null,
         videoUrl: videoUrl.trim() || null,
         pdfUrl: pdfUrl.trim() || null,
+
+        packageId: selectedPackageId || null,
+
         isPublished,
         quiz: quizQuestions.length
           ? { questions: quizQuestions.map((question) => ({
@@ -966,6 +1006,9 @@ export default function TeacherDashboard() {
               { key: 'addLesson', en: 'Create Module', ar: 'إنشاء وحدة' },
               { key: 'exams', en: 'Assessment Pipeline', ar: 'مسار التقييم' },
               { key: 'announcements', en: 'Release Notes', ar: 'ملاحظات الإصدار' },
+
+              { key: 'packages', en: 'Packages', ar: 'الباقات' },
+
             ] as const).map((tab) => (
               <button
                 key={tab.key}
@@ -1161,6 +1204,32 @@ export default function TeacherDashboard() {
                   </select>
                 </div>
               </div>
+
+              {/* Package Selection */}
+              {lessonGrade !== '' && (
+                <div>
+                  <label className={`block text-xs font-semibold mb-1.5 ${bodyText}`}>{isAr ? 'الباقة (اختياري)' : 'Package (Optional)'}</label>
+                  <select
+                    value={selectedPackageId}
+                    onChange={(e) => setSelectedPackageId(e.target.value)}
+                    className={`w-full px-4 py-2.5 sm:py-3 rounded-xl sm:rounded-2xl border text-sm appearance-none cursor-pointer ${inputBg}`}
+                  >
+                    <option value="" className={isDark ? 'bg-[#2A0D12]' : 'bg-white'}>{isAr ? 'بدون باقة' : 'No Package'}</option>
+                    {availablePackages.map((pkg) => (
+                      <option key={pkg.id} value={pkg.id} className={isDark ? 'bg-[#2A0D12]' : 'bg-white'}>
+                        {pkg.name}
+                      </option>
+                    ))}
+                  </select>
+                  {availablePackages.length === 0 && (
+                    <p className={`mt-2 text-xs ${mutedText}`}>
+                      {isAr ? 'أنشئ شهرًا لهذا الصف من قسم الباقات قبل إضافة الدرس.' : 'Create a month for this grade from Packages before adding the lesson.'}
+                    </p>
+                  )}
+                </div>
+              )}
+
+
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-5">
                 <div>
@@ -1535,6 +1604,15 @@ export default function TeacherDashboard() {
             </div>
           </div>
         )}
+
+
+
+        {/* ===== PACKAGES SECTION ===== */}
+
+        {activeSection === 'packages' && <PackageManager />}
+
+
+
       </main>
 
       {/* ===== Student Profile Modal ===== */}
